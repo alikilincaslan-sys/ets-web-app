@@ -15,7 +15,7 @@ def market_clearing_price_linear(df, price_min, price_max, step=1):
         total_demand = 0.0
         total_supply = 0.0
 
-        # Demand
+        # Demand (buyers)
         if not buyers.empty:
             q0 = buyers["net_ets"].values
             p_bid = buyers["p_bid"].values
@@ -23,7 +23,7 @@ def market_clearing_price_linear(df, price_min, price_max, step=1):
             frac = 1 - (p - price_min) / denom
             total_demand = np.sum(q0 * np.clip(frac, 0, 1))
 
-        # Supply
+        # Supply (sellers)
         if not sellers.empty:
             q0 = (-sellers["net_ets"]).values
             p_ask = sellers["p_ask"].values
@@ -51,12 +51,15 @@ def ets_hesapla(
         if col not in df.columns:
             raise ValueError(f"Missing column: {col}")
 
+    if not (0 <= agk <= 1):
+        raise ValueError("AGK must be between 0 and 1")
+
     df = df.copy()
 
-    # Intensity
+    # 1) Gerçek yoğunluk (I)
     df["intensity"] = df["Emissions_tCO2"] / df["Generation_MWh"]
 
-    # Fuel benchmark
+    # 2) Yakıt bazlı benchmark (B)
     benchmark_map = {}
     for ft in df["FuelType"].unique():
         sub = df[df["FuelType"] == ft]
@@ -64,33 +67,38 @@ def ets_hesapla(
 
     df["B_fuel"] = df["FuelType"].map(benchmark_map)
 
-    # Allocation intensity (AGK)
-    df["tahsis_intensity"] = df["B_fuel"] + agk * (df["intensity"] - ddf["tahsis_intensity"] = df["intensity"] + agk * (df["B_fuel"] - df["intensity"])
-f["B_fuel"])
+    # 3) ✅ DOĞRU AGK FORMÜLÜ (TERSİ DÜZELTİLDİ)
+    # T_i = I_i + AGK * (B - I)
+    df["tahsis_intensity"] = (
+        df["intensity"] + agk * (df["B_fuel"] - df["intensity"])
+    )
 
-    # Free allocation
+    # 4) Ücretsiz tahsis
     df["free_alloc"] = df["Generation_MWh"] * df["tahsis_intensity"]
 
-    # Net ETS position
+    # 5) Net ETS pozisyonu
     df["net_ets"] = df["Emissions_tCO2"] - df["free_alloc"]
 
-    # BID / ASK
+    # 6) BID / ASK
     delta = df["intensity"] - df["B_fuel"]
 
-    df["p_bid"] = price_min + slope_bid * np.maximum(delta, 0)
-    df["p_ask"] = price_min + slope_ask * np.maximum(-delta, 0)
+    p_bid = price_min + slope_bid * np.maximum(delta, 0)
+    p_ask = price_min + slope_ask * np.maximum(-delta, 0)
 
-    df["p_bid"] = (df["p_bid"] + spread / 2).clip(price_min, price_max)
-    df["p_ask"] = (df["p_ask"] - spread / 2).clip(price_min, price_max)
+    p_bid = p_bid + spread / 2
+    p_ask = np.maximum(p_ask - spread / 2, price_min)
 
-    # Clearing price
+    df["p_bid"] = p_bid.clip(price_min, price_max)
+    df["p_ask"] = p_ask.clip(price_min, price_max)
+
+    # 7) Clearing price
     clearing_price = market_clearing_price_linear(
         df[["net_ets", "p_bid", "p_ask"]],
         price_min,
         price_max,
     )
 
-    # ETS cash flows
+    # 8) ETS nakit akışları
     df["carbon_price"] = clearing_price
     df["ets_cost_total_€"] = df["net_ets"].clip(lower=0) * clearing_price
     df["ets_revenue_total_€"] = (-df["net_ets"]).clip(lower=0) * clearing_price
