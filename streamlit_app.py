@@ -23,8 +23,13 @@ tavan_fiyat = st.sidebar.number_input(
 )
 
 agk_orani = st.sidebar.number_input(
-    "AGK Oranı (ör: 0.15)", min_value=0.0, max_value=1.0, value=0.15, step=0.01
+    "Free Allocation Ratio", 
+    min_value=0.0, 
+    max_value=1.0, 
+    value=0.15, 
+    step=0.01
 )
+
 
 alpha = st.sidebar.slider(
     "Benchmark Smoothing (α)", min_value=0.0, max_value=1.0, value=0.75, step=0.05
