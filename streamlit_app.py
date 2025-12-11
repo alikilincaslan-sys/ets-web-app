@@ -122,17 +122,50 @@ if st.button("Run ETS Model"):
             [{"FuelType": k, "Benchmark_B_fuel": v} for k, v in benchmark_map.items()]
         ).sort_values("FuelType")
         st.dataframe(bench_df, use_container_width=True)
+total_cost = sonuc_df["ets_cost_total_€"].sum()
+total_revenue = sonuc_df["ets_revenue_total_€"].sum()
+net_cashflow = sonuc_df["ets_net_cashflow_€"].sum()
 
-        st.subheader("Sonuçlar")
-        st.dataframe(sonuc_df, use_container_width=True)
+c1, c2, c3 = st.columns(3)
 
-        csv_bytes = sonuc_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "Download results as CSV",
-            data=csv_bytes,
-            file_name="ets_results.csv",
-            mime="text/csv",
-        )
+c1.metric("Toplam ETS Maliyeti (€)", f"{total_cost:,.0f}")
+c2.metric("Toplam ETS Geliri (€)", f"{total_revenue:,.0f}")
+c3.metric("Net Nakit Akışı (€)", f"{net_cashflow:,.0f}")
+
+       st.subheader("ETS Sonuçları – Alıcılar (Net ETS > 0)")
+
+buyers_df = sonuc_df[sonuc_df["net_ets"] > 0].copy()
+st.dataframe(
+    buyers_df[
+        [
+            "Plant",
+            "FuelType",
+            "net_ets",
+            "carbon_price",
+            "ets_cost_total_€",
+            "ets_cost_€/MWh",
+        ]
+    ],
+    use_container_width=True,
+)
+
+st.subheader("ETS Sonuçları – Satıcılar (Net ETS < 0)")
+
+sellers_df = sonuc_df[sonuc_df["net_ets"] < 0].copy()
+st.dataframe(
+    sellers_df[
+        [
+            "Plant",
+            "FuelType",
+            "net_ets",
+            "carbon_price",
+            "ets_revenue_total_€",
+            "ets_revenue_€/MWh",
+        ]
+    ],
+    use_container_width=True,
+)
+
 
     except Exception as e:
         st.error(f"Model çalışırken hata oluştu: {e}")
