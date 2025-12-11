@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from io import BytesIO
 
 from ets_model import ets_hesapla
 
@@ -12,7 +13,8 @@ Bu arayüz:
 - Excel dosyasındaki **tüm sekmeleri** okur ve birleştirir (FuelType = sekme adı),
 - Yakıt türüne göre benchmark hesaplar,
 - AGK ile tahsis yoğunluğunu belirler,
-- Tüm tesisleri tek piyasada birleştirip **BID/ASK** eğrileriyle **clearing price** üretir.
+- Tüm tesisleri tek piyasada birleştirip **BID/ASK** eğrileriyle **clearing price** üretir,
+- Sonuçları **Excel rapor** olarak indirir.
 """
 )
 
@@ -36,7 +38,7 @@ agk = st.sidebar.slider(
     max_value=1.0,
     value=0.50,
     step=0.05,
-    help="T_i = B + AGK*(I - B)",
+    help="AGK yönü: AGK=1→Benchmark, AGK=0→Tesis yoğunluğu (T_i = I + AGK*(B - I))",
 )
 
 st.sidebar.subheader("Market Calibration")
@@ -118,6 +120,7 @@ if st.button("Run ETS Model"):
 
         st.success(f"Clearing Price: {clearing_price:.2f} €/tCO₂")
 
+        # Benchmark tablosu
         st.subheader("Benchmark (yakıt bazında)")
         bench_df = (
             pd.DataFrame(
@@ -127,56 +130,8 @@ if st.button("Run ETS Model"):
             .reset_index(drop=True)
         )
         st.dataframe(bench_df, use_container_width=True)
-from io import BytesIO
 
-# -------------------------
-# Excel RAPOR OLUŞTUR
-# -------------------------
-output = BytesIO()
-
-with pd.ExcelWriter(output, engine="openpyxl") as writer:
-
-    # 1) SUMMARY
-    summary_df = pd.DataFrame({
-        "Metric": [
-            "Clearing Price (€/tCO₂)",
-            "Total ETS Cost (€)",
-            "Total ETS Revenue (€)",
-            "Net Cashflow (€)"
-        ],
-        "Value": [
-            clearing_price,
-            total_cost,
-            total_revenue,
-            net_cashflow
-        ]
-    })
-    summary_df.to_excel(writer, sheet_name="Summary", index=False)
-
-    # 2) BENCHMARKS
-    bench_df.to_excel(writer, sheet_name="Benchmarks", index=False)
-
-    # 3) ALL PLANTS
-    sonuc_df.to_excel(writer, sheet_name="All_Plants", index=False)
-
-    # 4) BUYERS
-    buyers_df.to_excel(writer, sheet_name="Buyers", index=False)
-
-    # 5) SELLERS
-    sellers_df.to_excel(writer, sheet_name="Sellers", index=False)
-
-# belleğe yaz
-output.seek(0)
-st.download_button(
-    label="Download ETS Report (Excel)",
-    data=output,
-    file_name="ETS_Report_Stable.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
-        # -------------------------
-        # KPI Özetleri (Gelir/Maliyet)
-        # -------------------------
+        # KPI özetleri
         total_cost = float(sonuc_df["ets_cost_total_€"].sum())
         total_revenue = float(sonuc_df["ets_revenue_total_€"].sum())
         net_cashflow = float(sonuc_df["ets_net_cashflow_€"].sum())
@@ -186,9 +141,7 @@ st.download_button(
         c2.metric("Toplam ETS Geliri (€)", f"{total_revenue:,.0f}")
         c3.metric("Net Nakit Akışı (€)", f"{net_cashflow:,.0f}")
 
-        # -------------------------
         # Alıcılar / Satıcılar
-        # -------------------------
         st.subheader("ETS Sonuçları – Alıcılar (Net ETS > 0)")
         buyers_df = sonuc_df[sonuc_df["net_ets"] > 0].copy()
         st.dataframe(
@@ -225,12 +178,66 @@ st.download_button(
             use_container_width=True,
         )
 
-        # -------------------------
-        # Tüm sonuçlar (opsiyonel)
-        # -------------------------
+        # Ham sonuçlar
         st.subheader("Tüm Sonuçlar (ham tablo)")
         st.dataframe(sonuc_df, use_container_width=True)
 
+        # -------------------------
+        # EXCEL RAPOR OLUŞTUR + İNDİR
+        # -------------------------
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            # Summary
+            summary_df = pd.DataFrame(
+                {
+                    "Metric": [
+                        "Clearing Price (€/tCO₂)",
+                        "Total ETS Cost (€)",
+                        "Total ETS Revenue (€)",
+                        "Net Cashflow (€)",
+                        "Price Min",
+                        "Price Max",
+                        "AGK",
+                        "Bid Slope",
+                        "Ask Slope",
+                        "Spread",
+                    ],
+                    "Value": [
+                        clearing_price,
+                        total_cost,
+                        total_revenue,
+                        net_cashflow,
+                        price_min,
+                        price_max,
+                        agk,
+                        slope_bid,
+                        slope_ask,
+                        spread,
+                    ],
+                }
+            )
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+            # Benchmarks
+            bench_df.to_excel(writer, sheet_name="Benchmarks", index=False)
+
+            # All plants
+            sonuc_df.to_excel(writer, sheet_name="All_Plants", index=False)
+
+            # Buyers / Sellers
+            buyers_df.to_excel(writer, sheet_name="Buyers", index=False)
+            sellers_df.to_excel(writer, sheet_name="Sellers", index=False)
+
+        output.seek(0)
+
+        st.download_button(
+            label="Download ETS Report (Excel)",
+            data=output,
+            file_name="ETS_Report_Stable.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        # (opsiyonel) CSV de kalsın istersen
         csv_bytes = sonuc_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "Download results as CSV",
