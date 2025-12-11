@@ -4,8 +4,6 @@ from ets_model import ets_hesapla
 
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
-st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
-
 st.title("ETS Geliştirme Modülü V001")
 
 st.write(
