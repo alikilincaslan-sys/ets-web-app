@@ -14,13 +14,15 @@ st.write(
 # --- Parametreler (sol panel) ---
 st.sidebar.header("Model Parameters")
 
-price_cap = st.sidebar.number_input(
-    "Carbon Price Cap (€/tCO₂)",
-    min_value=0.0,
-    max_value=200.0,
-    value=50.0,
-    step=1.0,
+price_min, price_max = st.sidebar.slider(
+    "Carbon Price Range (€/tCO₂)",
+    min_value=0,
+    max_value=200,
+    value=(0, 100),
+    step=1,
+    help="ETS clearing price bu aralıkta aranacak. Örnek: 0–100 €/tCO₂"
 )
+
 
 agk = st.sidebar.slider(
     "Just Transition Coefficient (AGK)",
