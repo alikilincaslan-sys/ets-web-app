@@ -291,22 +291,34 @@ if st.button("Run ETS Model"):
             wb = writer.book
 
             # 1) Supply–Demand Line Chart
-            ws_curve = wb["Market_Curve"]
-            line = LineChart()
-            line.title = "Market Supply–Demand Curve"
-            line.y_axis.title = "Volume (tCO₂)"
-            line.x_axis.title = "Price (€/tCO₂)"
+           # 1) Supply–Demand Line Chart
+ws_curve = wb["Market_Curve"]
+line = LineChart()
+line.title = "Market Supply–Demand Curve"
+line.y_axis.title = "Volume (tCO₂)"
+line.x_axis.title = "Price (€/tCO₂)"
 
-            # Data range: columns B and C; categories: column A
-            data = Reference(ws_curve, min_col=2, min_row=1, max_col=3, max_row=ws_curve.max_row)
-            cats = Reference(ws_curve, min_col=1, min_row=2, max_row=ws_curve.max_row)
-            line.add_data(data, titles_from_data=True)
-            line.set_categories(cats)
-            line.height = 12
-            line.width = 24
+# Data range: columns B and C; categories: column A
+data = Reference(ws_curve, min_col=2, min_row=1, max_col=3, max_row=ws_curve.max_row)
+cats = Reference(ws_curve, min_col=1, min_row=2, max_row=ws_curve.max_row)
+line.add_data(data, titles_from_data=True)
+line.set_categories(cats)
+line.height = 12
+line.width = 24
 
-            # Add to sheet
-            ws_curve.add_chart(line, "E2")
+# Clearing price helper series (yatay referans çizgisi gibi davranır)
+ws_curve["D1"] = "Clearing_Price"
+for r in range(2, ws_curve.max_row + 1):
+    ws_curve[f"D{r}"] = float(clearing_price)
+
+line.add_data(
+    Reference(ws_curve, min_col=4, min_row=1, max_row=ws_curve.max_row),
+    titles_from_data=True
+)
+
+# Chart'ı SADECE 1 KEZ ekle
+ws_curve.add_chart(line, "E2")
+
 
             # Clearing price line (as a helper column so it's visible)
             # We'll add a column D = Clearing_Price and plot it as a vertical marker-like line
