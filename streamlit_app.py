@@ -1,43 +1,45 @@
 import streamlit as st
 import pandas as pd
+
 from ets_model import ets_hesapla
 
-# Sayfa ayarları
+
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
-# Başlık
 st.title("ETS Geliştirme Modülü V001")
-
 st.write(
-    "Bu arayüz: Excel'deki tüm sekmeleri okuyarak yakıt türüne göre benchmark hesaplar, "
-    "Adil Geçiş Katsayısı (AGK) ile tahsis yoğunluğunu belirler ve tüm tesisler için "
-    "birleşik ETS piyasasında tek bir karbon fiyatı üretir."
+    """
+Bu arayüz:
+- Excel dosyasındaki **tüm sekmeleri** okur ve birleştirir (FuelType = sekme adı),
+- Yakıt türüne göre benchmark hesaplar,
+- AGK ile tahsis yoğunluğunu belirler,
+- Tüm tesisleri tek piyasada birleştirip **BID/ASK** eğrileriyle **clearing price** üretir.
+"""
 )
 
-# -----------------------------
-# PARAMETRELER (Sol panel)
-# -----------------------------
+# -------------------------
+# Sidebar: Parametreler
+# -------------------------
 st.sidebar.header("Model Parameters")
 
-# Karbon fiyat aralığı (min–max)
 price_min, price_max = st.sidebar.slider(
     "Carbon Price Range (€/tCO₂)",
     min_value=0,
     max_value=200,
-    value=(0, 100),
+    value=(0, 20),
     step=1,
-    help="ETS clearing price bu aralıkta aranacak. Örnek: 0–100 €/tCO₂"
+    help="Clearing price bu aralık içinde bulunur."
 )
 
-# Adil Geçiş Katsayısı
 agk = st.sidebar.slider(
     "Just Transition Coefficient (AGK)",
     min_value=0.0,
     max_value=1.0,
     value=0.50,
     step=0.05,
-    help="Tahsis Yoğunluğuᵢ = B_yakıt + AGK × (Iᵢ − B_yakıt). 1 → saf benchmark, 0 → santral yoğunluğu."
+    help="T_i = B + AGK*(I - B)"
 )
+
 st.sidebar.subheader("Market Calibration")
 
 slope_bid = st.sidebar.slider(
@@ -46,7 +48,7 @@ slope_bid = st.sidebar.slider(
     max_value=500,
     value=150,
     step=10,
-    help="Alıcıların (kirli tesis) ödeme isteği hassasiyeti. Yükseldikçe p_bid artar."
+    help="Alıcıların (kirli tesis) ödeme isteği hassasiyeti."
 )
 
 slope_ask = st.sidebar.slider(
@@ -55,7 +57,7 @@ slope_ask = st.sidebar.slider(
     max_value=500,
     value=150,
     step=10,
-    help="Satıcıların (temiz tesis) satış isteği hassasiyeti. Yükseldikçe p_ask artar."
+    help="Satıcıların (temiz tesis) satış isteği hassasiyeti."
 )
 
 spread = st.sidebar.slider(
@@ -64,76 +66,73 @@ spread = st.sidebar.slider(
     max_value=10.0,
     value=0.0,
     step=0.5,
-    help="İstersen piyasa spread'i ekler. 0 bırakabilirsin."
+    help="0 bırakabilirsin. Spread eklemek bid/ask aynı görünmesini azaltır."
 )
 
-# -----------------------------
-# EXCEL YÜKLEME
-# -----------------------------
-uploaded_file = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
+st.sidebar.divider()
+st.sidebar.caption("Excel'de beklenen kolonlar: Plant, Generation_MWh, Emissions_tCO2")
+st.sidebar.caption("Sekme adı FuelType olarak alınır.")
 
-if uploaded_file is None:
-    st.info("Lütfen bir Excel dosyası yükleyin.")
-else:
-    # Tüm sekmeleri oku ve birleştir
+# -------------------------
+# Excel yükleme
+# -------------------------
+uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
+
+def read_all_sheets(file) -> pd.DataFrame:
+    xls = pd.ExcelFile(file)
+    frames = []
+    for sheet in xls.sheet_names:
+        df = pd.read_excel(xls, sheet_name=sheet)
+        df["FuelType"] = sheet
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+if uploaded is None:
+    st.info("Lütfen bir Excel yükleyin.")
+    st.stop()
+
+try:
+    df_all = read_all_sheets(uploaded)
+except Exception as e:
+    st.error(f"Excel okunurken hata oluştu: {e}")
+    st.stop()
+
+st.subheader("Yüklenen veri (birleştirilmiş)")
+st.dataframe(df_all.head(50), use_container_width=True)
+
+# -------------------------
+# Model çalıştır
+# -------------------------
+if st.button("Run ETS Model"):
     try:
-        xls = pd.ExcelFile(uploaded_file)
-        all_sheets = []
+        sonuc_df, benchmark_map, clearing_price = ets_hesapla(
+            df_all,
+            price_min,
+            price_max,
+            agk,
+            slope_bid=slope_bid,
+            slope_ask=slope_ask,
+            spread=spread,
+        )
 
-        for sheet in xls.sheet_names:
-            df_sheet = pd.read_excel(uploaded_file, sheet_name=sheet)
-            df_sheet["FuelType"] = sheet  # Sheet adı yakıt türü olarak eklendi
-            all_sheets.append(df_sheet)
+        st.success(f"Clearing Price: {clearing_price:.2f} €/tCO₂")
 
-        df_all = pd.concat(all_sheets, ignore_index=True)
+        st.subheader("Benchmark (yakıt bazında)")
+        bench_df = pd.DataFrame(
+            [{"FuelType": k, "Benchmark_B_fuel": v} for k, v in benchmark_map.items()]
+        ).sort_values("FuelType")
+        st.dataframe(bench_df, use_container_width=True)
 
-    except Exception as e:
-        st.error(f"Excel okunurken hata oluştu: {e}")
-        st.stop()
-
-    st.subheader("Tüm Tesisler (Birleştirilmiş Veri)")
-    st.dataframe(df_all, use_container_width=True)
-
-    # -----------------------------
-    # MODEL ÇALIŞTIRMA
-    # -----------------------------
-    if st.button("Run ETS Model"):
-        try:
-           sonuc_df, benchmark_map, clearing_price = ets_hesapla(
-    df_all,
-    price_min,
-    price_max,
-    agk,
-    slope_bid,
-    slope_ask,
-    spread,
-)
-
-        except Exception as e:
-            st.error(f"Model çalışırken hata oluştu: {e}")
-            st.stop()
-
-        # Clearing Price
-        st.success(f"Market Clearing Price: {clearing_price:.2f} €/tCO₂")
-
-        # Benchmark tablosu
-        st.subheader("Fuel-Type Benchmark Intensities (B_yakıt)")
-        bench_rows = [
-            {"FuelType": ft, "B_yakıt (tCO₂/MWh)": val}
-            for ft, val in benchmark_map.items()
-        ]
-        bench_df = pd.DataFrame(bench_rows)
-        st.table(bench_df)
-
-        # Sonuçlar
-        st.subheader("Plant-Level ETS Results")
+        st.subheader("Sonuçlar")
         st.dataframe(sonuc_df, use_container_width=True)
 
-        # CSV indirme
-        csv = sonuc_df.to_csv(index=False).encode("utf-8")
+        csv_bytes = sonuc_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            label="Download results as CSV",
-            data=csv,
+            "Download results as CSV",
+            data=csv_bytes,
             file_name="ets_results.csv",
             mime="text/csv",
         )
+
+    except Exception as e:
+        st.error(f"Model çalışırken hata oluştu: {e}")
