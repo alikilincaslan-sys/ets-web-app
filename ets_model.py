@@ -7,11 +7,14 @@ def market_clearing_price_linear(
     price_min: int,
     price_max: int,
     step: int = 1,
-):
+) -> float:
     """
     Lineer BID/ASK yaklaşımı ile piyasa clearing fiyatı.
-    - Alıcılar (net_ets > 0): fiyat arttıkça talep lineer azalır ve p_bid'de sıfırlanır.
-    - Satıcılar (net_ets < 0): fiyat arttıkça arz lineer artar ve price_max'ta tam kapasiteye ulaşır.
+
+    - Buyers (net_ets > 0): fiyat arttıkça talep lineer azalır ve p_bid'de sıfırlanır.
+    - Sellers (net_ets < 0): fiyat arttıkça arz lineer artar ve p_ask'ta 0'dan başlar.
+
+    Clearing: toplam_arz >= toplam_talep olduğu ilk fiyat.
     """
 
     if price_max <= price_min:
@@ -19,34 +22,34 @@ def market_clearing_price_linear(
 
     prices = np.arange(price_min, price_max + step, step)
 
-    # Alıcılar: net_ets > 0
     buyers = df_positions[df_positions["net_ets"] > 0].copy()
-    # Satıcılar: net_ets < 0
     sellers = df_positions[df_positions["net_ets"] < 0].copy()
 
-    # Toplam talep/arz fonksiyonları
     for p in prices:
         total_demand = 0.0
         total_supply = 0.0
 
-        # ---- DEMAND (buyers) ----
+        # ----------------
+        # DEMAND (BUYERS)
         # q(p) = q0 * max(0, 1 - (p - price_min)/(p_bid - price_min))
+        # ----------------
         if not buyers.empty:
-            p_bid = buyers["p_bid"].values
-            q0 = buyers["net_ets"].values  # pozitif
+            q0 = buyers["net_ets"].to_numpy()  # pozitif
+            p_bid = buyers["p_bid"].to_numpy()
 
             denom = np.maximum(p_bid - price_min, 1e-9)
             frac = 1.0 - (p - price_min) / denom
             q = q0 * np.clip(frac, 0.0, 1.0)
 
-            # p > p_bid ise otomatik 0 olur (frac negatif)
             total_demand = float(np.sum(q))
 
-        # ---- SUPPLY (sellers) ----
+        # ----------------
+        # SUPPLY (SELLERS)
         # q(p) = q0 * max(0, (p - p_ask)/(price_max - p_ask))
+        # ----------------
         if not sellers.empty:
-            p_ask = sellers["p_ask"].values
-            q0 = (-sellers["net_ets"].values)  # pozitif arz kapasitesi
+            q0 = (-sellers["net_ets"]).to_numpy()  # pozitif kapasite
+            p_ask = sellers["p_ask"].to_numpy()
 
             denom = np.maximum(price_max - p_ask, 1e-9)
             frac = (p - p_ask) / denom
@@ -54,11 +57,9 @@ def market_clearing_price_linear(
 
             total_supply = float(np.sum(q))
 
-        # Clearing: arz >= talep olduğunda ilk fiyat
         if total_supply >= total_demand:
             return float(p)
 
-    # Hiçbir fiyatta arz talebi karşılamazsa üst sınır
     return float(price_max)
 
 
@@ -67,9 +68,9 @@ def ets_hesapla(df: pd.DataFrame, price_min: int, price_max: int, agk: float):
     1) Yakıt bazlı benchmark (B_yakıt)
     2) Tahsis yoğunluğu: T_i = B_yakıt + AGK*(I_i - B_yakıt)
     3) Net ETS: net_ets = Em - Gen*T_i
-    4) Lineer BID/ASK ile birleşik piyasada clearing price
+    4) BID/ASK fonksiyonları ile birleşik piyasada clearing price (lineer)
 
-    Not: AGK tanımı senin istediğin gibi korunmuştur.
+    AGK tanımı senin istediğin gibi KORUNDU.
     """
 
     required = ["Plant", "FuelType", "Emissions_tCO2", "Generation_MWh"]
@@ -97,38 +98,42 @@ def ets_hesapla(df: pd.DataFrame, price_min: int, price_max: int, agk: float):
     df["B_fuel"] = df["FuelType"].map(benchmark_map)
 
     # 3) Tahsis yoğunluğu (AGK senin tanımınla)
-    # T_i = (1-AGK)*B + AGK*I
     df["tahsis_intensity"] = df["B_fuel"] + agk * (df["intensity"] - df["B_fuel"])
 
     # 4) Ücretsiz tahsis
     df["free_alloc"] = df["Generation_MWh"] * df["tahsis_intensity"]
 
-    # 5) Net ETS pozisyonu
+    # 5) Net ETS pozisyonu (pozitif: alıcı, negatif: satıcı)
     df["net_ets"] = df["Emissions_tCO2"] - df["free_alloc"]
 
     # -----------------------------
-    # 6) BID/ASK fiyat parametreleri (Lineer)
+    # 6) BID/ASK fiyat parametreleri (AYRI!)
     # -----------------------------
-    # Basit ama gerçekçi bir "isteklilik" dönüşümü:
-    # intensity - benchmark farkını €/t ölçeğine çevirip min–max aralığına kırpıyoruz.
-    # Bu ölçek katsayısını ileride slider yapabiliriz.
-    price_slope = 100.0  # €/tCO2 / (tCO2/MWh) ölçeği (başlangıç)
+    # 0–20 gibi dar aralıkta yığılmayı azaltmak için eğimleri biraz yükselttik.
+    slope_bid = 150.0
+    slope_ask = 150.0
 
-    # Temiz santral (I<B) → daha düşük fiyatlardan satmaya razı (ask düşük)
-    # Kirli santral (I>B) → daha yüksek fiyata kadar almaya razı (bid yüksek)
-    p_ref = price_min + price_slope * (df["intensity"] - df["B_fuel"])
+    delta = df["intensity"] - df["B_fuel"]
 
-    # min–max aralığına kırp
-    p_ref = p_ref.clip(lower=price_min, upper=price_max)
+    # Alıcıların (kirli) bid fiyatı: sadece delta>0 ise yükselsin
+    p_bid = price_min + slope_bid * np.maximum(delta, 0.0)
 
-    # Buyer için p_bid, seller için p_ask olarak kullanıyoruz
-    df["p_bid"] = p_ref
-    df["p_ask"] = p_ref
+    # Satıcıların (temiz) ask fiyatı: sadece delta<0 ise yükselsin
+    p_ask = price_min + slope_ask * np.maximum(-delta, 0.0)
 
-    # 7) Clearing price (birleşik piyasa, gerçekçi fiyata duyarlı arz-talep)
-    clearing_price = market_clearing_price_linear(df[["net_ets", "p_bid", "p_ask"]], price_min, price_max, step=1)
+    # Aralığa kırp
+    df["p_bid"] = p_bid.clip(lower=price_min, upper=price_max)
+    df["p_ask"] = p_ask.clip(lower=price_min, upper=price_max)
 
-    # 8) ETS maliyetleri (pozitif net_ets için ödeme)
+    # 7) Clearing price (birleşik piyasa, lineer arz-talep)
+    clearing_price = market_clearing_price_linear(
+        df[["net_ets", "p_bid", "p_ask"]],
+        price_min,
+        price_max,
+        step=1,
+    )
+
+    # 8) ETS maliyetleri
     df["carbon_price"] = clearing_price
     df["ets_cost_total_€"] = df["net_ets"].clip(lower=0) * clearing_price
     df["ets_cost_€/MWh"] = df["ets_cost_total_€"] / df["Generation_MWh"]
