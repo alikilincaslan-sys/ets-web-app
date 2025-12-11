@@ -38,6 +38,34 @@ agk = st.sidebar.slider(
     step=0.05,
     help="Tahsis Yoğunluğuᵢ = B_yakıt + AGK × (Iᵢ − B_yakıt). 1 → saf benchmark, 0 → santral yoğunluğu."
 )
+st.sidebar.subheader("Market Calibration")
+
+slope_bid = st.sidebar.slider(
+    "Bid Slope (β_bid)",
+    min_value=10,
+    max_value=500,
+    value=150,
+    step=10,
+    help="Alıcıların (kirli tesis) ödeme isteği hassasiyeti. Yükseldikçe p_bid artar."
+)
+
+slope_ask = st.sidebar.slider(
+    "Ask Slope (β_ask)",
+    min_value=10,
+    max_value=500,
+    value=150,
+    step=10,
+    help="Satıcıların (temiz tesis) satış isteği hassasiyeti. Yükseldikçe p_ask artar."
+)
+
+spread = st.sidebar.slider(
+    "Bid/Ask Spread (€/tCO₂)",
+    min_value=0.0,
+    max_value=10.0,
+    value=0.0,
+    step=0.5,
+    help="İstersen piyasa spread'i ekler. 0 bırakabilirsin."
+)
 
 # -----------------------------
 # EXCEL YÜKLEME
