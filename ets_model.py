@@ -60,7 +60,8 @@ def ets_hesapla(df, price_cap, agk):
     df["net_ets"] = df["Emissions_tCO2"] - df["free_alloc"]
 
     # 6) Clearing price – tüm tesisler birlikte
-    clearing_price = market_clearing_price(df["net_ets"], price_cap)
+   clearing_price = market_clearing_price(df["net_ets"], price_min, price_max)
+
 
     # 7) ETS maliyetleri (sadece pozitif net_ets için)
     df["carbon_price"] = clearing_price
