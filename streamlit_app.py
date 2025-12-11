@@ -10,7 +10,8 @@ st.title("ETS Geliştirme Modülü V001")
 
 st.write(
     "Bu arayüz: Excel'deki tüm sekmeleri okuyarak yakıt türüne göre benchmark hesaplar, "
-    "Adil Geçiş Katsayısı (AGK) ile tahsis yoğunluğunu belirler ve tüm tesisler için birleşik ETS piyasasında tek bir karbon fiyatı üretir."
+    "Adil Geçiş Katsayısı (AGK) ile tahsis yoğunluğunu belirler ve tüm tesisler için "
+    "birleşik ETS piyasasında tek bir karbon fiyatı üretir."
 )
 
 # -----------------------------
@@ -18,14 +19,14 @@ st.write(
 # -----------------------------
 st.sidebar.header("Model Parameters")
 
-# Karbon fiyat tavanı (şimdilik tek değer)
-price_cap = st.sidebar.slider(
-    "Carbon Price Cap (€/tCO₂)",
+# Karbon fiyat aralığı (min–max)
+price_min, price_max = st.sidebar.slider(
+    "Carbon Price Range (€/tCO₂)",
     min_value=0,
     max_value=200,
-    value=50,
+    value=(0, 100),
     step=1,
-    help="ETS clearing price bu değere kadar taranır (0–tavan fiyat)."
+    help="ETS clearing price bu aralıkta aranacak. Örnek: 0–100 €/tCO₂"
 )
 
 # Adil Geçiş Katsayısı
@@ -72,7 +73,8 @@ else:
         try:
             sonuc_df, benchmark_map, clearing_price = ets_hesapla(
                 df_all,
-                price_cap,
+                price_min,
+                price_max,
                 agk,
             )
         except Exception as e:
