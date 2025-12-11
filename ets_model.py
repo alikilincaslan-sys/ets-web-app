@@ -63,7 +63,8 @@ def market_clearing_price_linear(
     return float(price_max)
 
 
-def ets_hesapla(df: pd.DataFrame, price_min: int, price_max: int, agk: float):
+def ets_hesapla(df: pd.DataFrame, price_min: indef ets_hesapla(df: pd.DataFrame, price_min: int, price_max: int, agk: float, slope_bid: float, slope_ask: float, spread: float):
+t, price_max: int, agk: float):
     """
     1) Yakıt bazlı benchmark (B_yakıt)
     2) Tahsis yoğunluğu: T_i = B_yakıt + AGK*(I_i - B_yakıt)
@@ -110,8 +111,6 @@ def ets_hesapla(df: pd.DataFrame, price_min: int, price_max: int, agk: float):
     # 6) BID/ASK fiyat parametreleri (AYRI!)
     # -----------------------------
     # 0–20 gibi dar aralıkta yığılmayı azaltmak için eğimleri biraz yükselttik.
-    slope_bid = 150.0
-    slope_ask = 150.0
 
     delta = df["intensity"] - df["B_fuel"]
 
