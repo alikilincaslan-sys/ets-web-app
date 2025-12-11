@@ -28,8 +28,8 @@ free_alloc_ratio = st.sidebar.number_input(
     max_value=1.0,
     value=0.15,
     step=0.01,
-    help="0 = no reduction, 0.15 = 15% reduction on the computed allocation.",
 )
+
 
 agk = st.sidebar.slider(
     "Just Transition Coefficient (AGK)",
