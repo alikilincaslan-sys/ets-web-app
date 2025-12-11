@@ -8,6 +8,9 @@ from openpyxl.chart.label import DataLabelList
 
 from ets_model import ets_hesapla
 
+# ✅ Temizleme modülü (repo'da data_cleaning.py olmalı)
+from data_cleaning import clean_ets_input, filter_intensity_outliers_by_fuel
+
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
 st.title("ETS Geliştirme Modülü V001")
@@ -77,7 +80,10 @@ spread = st.sidebar.slider(
 st.sidebar.divider()
 st.sidebar.caption("Excel'de beklenen kolonlar: Plant, Generation_MWh, Emissions_tCO2")
 st.sidebar.caption("Sekme adı FuelType olarak alınır.")
-# ---- Data Cleaning Toggle
+
+# -------------------------
+# Data Cleaning Controls
+# -------------------------
 st.sidebar.subheader("Data Cleaning")
 
 do_clean = st.sidebar.toggle(
@@ -162,12 +168,67 @@ if uploaded is None:
     st.stop()
 
 try:
-    df_all = read_all_sheets(uploaded)
+    df_all_raw = read_all_sheets(uploaded)
 except Exception as e:
     st.error(f"Excel okunurken hata oluştu: {e}")
     st.stop()
 
-st.subheader("Yüklenen veri (birleştirilmiş)")
+st.subheader("Yüklenen veri (ham / birleştirilmiş)")
+st.dataframe(df_all_raw.head(50), use_container_width=True)
+
+# -------------------------
+# Temizleme aşaması (opsiyonel)
+# -------------------------
+st.subheader("Veri Temizleme (opsiyonel)")
+
+df_all = df_all_raw.copy()
+
+if do_clean:
+    cleaned_frames = []
+    reports_basic = []
+
+    for ft in df_all["FuelType"].unique():
+        part = df_all[df_all["FuelType"] == ft].copy()
+        cleaned, rep = clean_ets_input(part, fueltype=ft)
+        rep["FuelType"] = ft
+        reports_basic.append(rep)
+        cleaned_frames.append(cleaned)
+
+    df_clean = pd.concat(cleaned_frames, ignore_index=True)
+    rep_basic_df = pd.DataFrame(reports_basic)
+
+    st.write("Temel temizlik özeti (sekme bazında):")
+    st.dataframe(rep_basic_df, use_container_width=True)
+
+    before = len(df_clean)
+    df_clean2, rep_out = filter_intensity_outliers_by_fuel(
+        df_clean, lower_pct=lower_pct, upper_pct=upper_pct
+    )
+    after = len(df_clean2)
+
+    st.info(
+        f"Outlier filtresi: {rep_out['outliers_dropped']} satır çıkarıldı "
+        f"({before:,} → {after:,}). Band: [{1-lower_pct:.2f}B, {1+upper_pct:.2f}B]"
+    )
+
+    df_all = df_clean2
+
+    # Temizlenmiş veriyi indir (opsiyon)
+    clean_out = BytesIO()
+    with pd.ExcelWriter(clean_out, engine="openpyxl") as w:
+        df_all.to_excel(w, index=False, sheet_name="Cleaned_Data")
+    clean_out.seek(0)
+
+    st.download_button(
+        "Download Cleaned Data (Excel)",
+        data=clean_out,
+        file_name="ETS_Cleaned_Data.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+else:
+    st.warning("Temizleme kapalı: ham veriyle devam ediliyor.")
+
+st.subheader("Modelde kullanılacak veri (ilk 50 satır)")
 st.dataframe(df_all.head(50), use_container_width=True)
 
 # -------------------------
@@ -279,6 +340,8 @@ if st.button("Run ETS Model"):
                         "Bid Slope",
                         "Ask Slope",
                         "Spread",
+                        "Cleaning Applied",
+                        "Outlier Band (lower, upper)",
                     ],
                     "Value": [
                         clearing_price,
@@ -291,6 +354,8 @@ if st.button("Run ETS Model"):
                         slope_bid,
                         slope_ask,
                         spread,
+                        str(do_clean),
+                        f"[{1-lower_pct:.2f}B, {1+upper_pct:.2f}B]" if do_clean else "N/A",
                     ],
                 }
             )
@@ -329,7 +394,7 @@ if st.button("Run ETS Model"):
             line.height = 12
             line.width = 24
 
-            # Clearing price helper series (görsel referans)
+            # Clearing price helper series
             ws_curve["D1"] = "Clearing_Price"
             for r in range(2, ws_curve.max_row + 1):
                 ws_curve[f"D{r}"] = float(clearing_price)
@@ -339,7 +404,6 @@ if st.button("Run ETS Model"):
                 titles_from_data=True
             )
 
-            # Chart'ı SADECE 1 KEZ ekle
             ws_curve.add_chart(line, "E2")
 
             # 2) Cashflow Bar Chart (Top 20)
@@ -371,7 +435,7 @@ if st.button("Run ETS Model"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        # CSV opsiyonel kalsın
+        # CSV opsiyonel
         csv_bytes = sonuc_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "Download results as CSV",
