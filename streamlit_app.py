@@ -7,8 +7,8 @@ st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 st.title("ETS Geliştirme Modülü V001")
 
 st.write(
-    "Bu arayüz: tüm Excel sekmelerini okur, yakıt türüne göre benchmark hesaplar, "
-    "Adil Geçiş Katsayısı (AGK) ile tahsis yoğunluğunu yumuşatır ve tek bir ETS piyasa fiyatı üretir."
+    "Bu arayüz: Excel'deki tüm sekmeleri okuyarak yakıt türüne göre benchmark hesaplar, "
+    "Adil Geçiş Katsayısı (AGK) ile tahsis yoğunluğunu belirler ve tüm tesisler için tek bir ETS piyasa fiyatı üretir."
 )
 
 # --- Parametreler (sol panel) ---
@@ -22,22 +22,13 @@ price_cap = st.sidebar.number_input(
     step=1.0,
 )
 
-free_alloc_ratio = st.sidebar.number_input(
-    "Free Allocation Ratio",
-    min_value=0.0,
-    max_value=1.0,
-    value=0.15,
-    step=0.01,
-)
-
-
 agk = st.sidebar.slider(
     "Just Transition Coefficient (AGK)",
     min_value=0.0,
     max_value=1.0,
     value=0.50,
     step=0.05,
-    help="Used in: Tahsis Yoğunluğuᵢ = B_yakıt + AGK × (Iᵢ − B_yakıt).",
+    help="Tahsis Yoğunluğuᵢ = B_yakıt + AGK × (Iᵢ − B_yakıt). 0 → saf benchmark, 1 → santral yoğunluğu.",
 )
 
 uploaded_file = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
@@ -66,7 +57,6 @@ else:
             sonuc_df, benchmark_map, clearing_price = ets_hesapla(
                 df_all,
                 price_cap,
-                free_alloc_ratio,
                 agk,
             )
         except Exception as e:
