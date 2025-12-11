@@ -53,4 +53,34 @@ else:
         df_all = pd.concat(all_sheets, ignore_index=True)
 
     except Exception as e:
-       st.error(f"Excel okunurken hata oluştu: {e}")
+        st.error(f"Excel okunurken hata oluştu: {e}")
+        st.stop()
+
+    st.subheader("Tüm Tesisler (Birleştirilmiş Veri)")
+    st.dataframe(df_all, use_container_width=True)
+
+    # --- MODEL ÇALIŞTIRMA ---
+    if st.button("Run ETS Model"):
+        try:
+            sonuc_df, benchmark_map, clearing_price = ets_hesapla(
+                df_all,
+                price_min,
+                price_max,
+                agk,
+            )
+        except Exception as e:
+            st.error(f"Model çalışırken hata oluştu: {e}")
+            st.stop()
+
+        # Clearing Price göster
+        st.success(f"Market Clearing Price: {clearing_price:.2f} €/tCO₂")
+
+        # Benchmark tablosu
+        st.subheader("Fuel-Type Benchmark Intensities (B_yakıt)")
+        bench_rows = [{"FuelType": ft, "B_yakıt (tCO₂/MWh)": val} for ft, val in benchmark_map.items()]
+        bench_df = pd.DataFrame(bench_rows)
+        st.table(bench_df)
+
+        # Sonuç dataframe
+        st.subheader("Plant-Level ETS Results")
+        st.dataframe(sonuc_df, use_c
