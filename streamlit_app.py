@@ -127,6 +127,52 @@ if st.button("Run ETS Model"):
             .reset_index(drop=True)
         )
         st.dataframe(bench_df, use_container_width=True)
+from io import BytesIO
+
+# -------------------------
+# Excel RAPOR OLUŞTUR
+# -------------------------
+output = BytesIO()
+
+with pd.ExcelWriter(output, engine="openpyxl") as writer:
+
+    # 1) SUMMARY
+    summary_df = pd.DataFrame({
+        "Metric": [
+            "Clearing Price (€/tCO₂)",
+            "Total ETS Cost (€)",
+            "Total ETS Revenue (€)",
+            "Net Cashflow (€)"
+        ],
+        "Value": [
+            clearing_price,
+            total_cost,
+            total_revenue,
+            net_cashflow
+        ]
+    })
+    summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+    # 2) BENCHMARKS
+    bench_df.to_excel(writer, sheet_name="Benchmarks", index=False)
+
+    # 3) ALL PLANTS
+    sonuc_df.to_excel(writer, sheet_name="All_Plants", index=False)
+
+    # 4) BUYERS
+    buyers_df.to_excel(writer, sheet_name="Buyers", index=False)
+
+    # 5) SELLERS
+    sellers_df.to_excel(writer, sheet_name="Sellers", index=False)
+
+# belleğe yaz
+output.seek(0)
+st.download_button(
+    label="Download ETS Report (Excel)",
+    data=output,
+    file_name="ETS_Report_Stable.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
         # -------------------------
         # KPI Özetleri (Gelir/Maliyet)
