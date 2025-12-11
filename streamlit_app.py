@@ -77,6 +77,32 @@ spread = st.sidebar.slider(
 st.sidebar.divider()
 st.sidebar.caption("Excel'de beklenen kolonlar: Plant, Generation_MWh, Emissions_tCO2")
 st.sidebar.caption("Sekme adı FuelType olarak alınır.")
+# ---- Data Cleaning Toggle
+st.sidebar.subheader("Data Cleaning")
+
+do_clean = st.sidebar.toggle(
+    "Apply cleaning rules?",
+    value=True,
+    help="Kapalıysa (Hayır), veri temizleme/outlier filtresi uygulanmaz."
+)
+
+lower_pct = st.sidebar.slider(
+    "Lower bound vs Benchmark (L)",
+    min_value=0.0,
+    max_value=1.0,
+    value=1.0,
+    step=0.05,
+    help="1.0 => alt sınır 0 (B*(1-1)=0). 0.5 => alt sınır 0.5B."
+)
+
+upper_pct = st.sidebar.slider(
+    "Upper bound vs Benchmark (U)",
+    min_value=0.0,
+    max_value=2.0,
+    value=1.0,
+    step=0.05,
+    help="1.0 => üst sınır 2B. 0.5 => üst sınır 1.5B. 2.0 => üst sınır 3B."
+)
 
 # -------------------------
 # Excel yükleme
