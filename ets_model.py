@@ -20,13 +20,13 @@ def market_clearing_price(net_positions, price_cap=100, step=0.1):
     return price_cap
 
 
-def ets_hesapla(df, price_cap, free_alloc_ratio, agk):
+def ets_hesapla(df, price_cap, agk):
     """
-    Tahsis Yoğunluğu_i = B_yakıt + AGK * (I_i - B_yakıt)
+    Tahsis Yoğunluğuᵢ = B_yakıt + AGK * (Iᵢ - B_yakıt)
 
-    - B_yakıt: yakıt bazlı üretim ağırlıklı benchmark
-    - AGK: Adil geçiş katsayısı (0–1)
-    - free_alloc_ratio: Free Allocation Ratio
+    - B_yakıt: yakıt bazlı üretim ağırlıklı benchmark yoğunluğu
+    - AGK    : Adil Geçiş Katsayısı (0–1)
+    - Ücretsiz tahsis: Generation_MWh × Tahsis Yoğunluğu
     """
 
     required = ["Plant", "FuelType", "Emissions_tCO2", "Generation_MWh"]
@@ -36,10 +36,10 @@ def ets_hesapla(df, price_cap, free_alloc_ratio, agk):
 
     df = df.copy()
 
-    # 1) Gerçek yoğunluk (I_i)
+    # 1) Gerçek yoğunluk (Iᵢ)
     df["intensity"] = df["Emissions_tCO2"] / df["Generation_MWh"]
 
-    # 2) YAKIT TÜREVİNE GÖRE BENCHMARK (B_yakıt)
+    # 2) Yakıt bazlı benchmark (B_yakıt): üretim ağırlıklı yoğunluk
     benchmark_map = {}
     for ft in df["FuelType"].unique():
         subset = df[df["FuelType"] == ft]
@@ -48,19 +48,19 @@ def ets_hesapla(df, price_cap, free_alloc_ratio, agk):
 
     df["B_fuel"] = df["FuelType"].map(benchmark_map)
 
-    # 3) TAHSiS YOĞUNLUĞU FORMÜLÜ
+    # 3) Tahsis yoğunluğu (senin formülün)
     df["tahsis_intensity"] = df["B_fuel"] + agk * (df["intensity"] - df["B_fuel"])
 
-    # 4) ÜCRETSİZ TAHSiS (Free Allocation Ratio uygulanır)
-    df["free_alloc"] = df["Generation_MWh"] * df["tahsis_intensity"] * (1 - free_alloc_ratio)
+    # 4) Ücretsiz tahsis
+    df["free_alloc"] = df["Generation_MWh"] * df["tahsis_intensity"]
 
-    # 5) NET ETS POZISYONU
+    # 5) Net ETS pozisyonu
     df["net_ets"] = df["Emissions_tCO2"] - df["free_alloc"]
 
-    # 6) CLEARING PRICE – tüm tesisler bir arada
+    # 6) Clearing price – tüm tesisler birlikte
     clearing_price = market_clearing_price(df["net_ets"], price_cap)
 
-    # 7) MALIYETLER
+    # 7) ETS maliyetleri (sadece pozitif net_ets için)
     df["carbon_price"] = clearing_price
     df["ets_cost_total_€"] = df["net_ets"].clip(lower=0) * clearing_price
     df["ets_cost_€/MWh"] = df["ets_cost_total_€"] / df["Generation_MWh"]
