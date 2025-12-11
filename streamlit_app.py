@@ -99,12 +99,16 @@ else:
     # -----------------------------
     if st.button("Run ETS Model"):
         try:
-            sonuc_df, benchmark_map, clearing_price = ets_hesapla(
-                df_all,
-                price_min,
-                price_max,
-                agk,
-            )
+           sonuc_df, benchmark_map, clearing_price = ets_hesapla(
+    df_all,
+    price_min,
+    price_max,
+    agk,
+    slope_bid,
+    slope_ask,
+    spread,
+)
+
         except Exception as e:
             st.error(f"Model çalışırken hata oluştu: {e}")
             st.stop()
