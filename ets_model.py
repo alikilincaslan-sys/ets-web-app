@@ -2,7 +2,9 @@ import pandas as pd
 import numpy as np
 
 
-def market_clearing_price(net_positions, price_cap=100, step=0.1):
+def market_clearing_price(net_positions, price_min=0, price_max=100, step=1.0):
+    prices = np.arange(price_min, price_max + step, step)
+
     """
     Arz-talep dengesine göre clearing price hesaplar.
     net_positions > 0 → talep
