@@ -65,7 +65,8 @@ def ets_hesapla(
     df["B_fuel"] = df["FuelType"].map(benchmark_map)
 
     # Allocation intensity (AGK)
-    df["tahsis_intensity"] = df["B_fuel"] + agk * (df["intensity"] - df["B_fuel"])
+    df["tahsis_intensity"] = df["B_fuel"] + agk * (df["intensity"] - ddf["tahsis_intensity"] = df["intensity"] + agk * (df["B_fuel"] - df["intensity"])
+f["B_fuel"])
 
     # Free allocation
     df["free_alloc"] = df["Generation_MWh"] * df["tahsis_intensity"]
