@@ -1,68 +1,62 @@
-# ets_model.py
 import pandas as pd
 import numpy as np
 
-def ets_hesapla(df, tavan_fiyat, agk_orani, alpha):
+def market_clearing_price(net_positions, price_cap=100, step=0.1):
     """
-    ETS Geliştirme Modülü V001 ana hesaplama fonksiyonu.
-
-    Parametreler:
-        df           : Excel'den okunmuş ham veri (her satır bir santral)
-        tavan_fiyat  : €/tCO2 cinsinden fiyat tavanı
-        agk_orani    : Örneğin 0.15 gibi, ücretsiz tahsis oranı
-        alpha        : Benchmark smoothing katsayısı (0–1)
-
-    Dönüş:
-        sonuc_df     : Hesaplanmış kolonları içeren DataFrame
+    Arz-talep dengesine göre clearing price hesaplar.
+    net_positions > 0 → talep
+    net_positions < 0 → arz
     """
+    prices = np.arange(0, price_cap + step, step)
 
-    # Gerekli kolon isimleri:
-    required_cols = ["Plant", "Emissions_tCO2", "Generation_MWh"]
-    for col in required_cols:
-        if col not in df.columns:
-            raise ValueError(
-                f"Excel dosyasında '{col}' isimli kolon bulunamadı. "
-                f"Lütfen kolon adlarını kontrol edin."
-            )
+    for price in prices:
+        demand = net_positions[net_positions > 0].sum()
+        supply = -net_positions[net_positions < 0].sum()
+
+        if supply >= demand:
+            return price
+
+    return price_cap
+
+
+def ets_hesapla(df, price_cap, agk_orani, alpha):
+    """
+    - Benchmark: fuel-type based
+    - Clearing price: all plants combined
+    - Fiyat: unified clearing price
+    """
+    required = ["Plant", "FuelType", "Emissions_tCO2", "Generation_MWh"]
+    for c in required:
+        if c not in df.columns:
+            raise ValueError(f"Excel kolon eksik: {c}")
 
     df = df.copy()
 
-    # 1) Emisyon yoğunluğu (tCO2/MWh)
-    df["intensity_tCO2_per_MWh"] = df["Emissions_tCO2"] / df["Generation_MWh"]
+    # Emisyon yoğunluğu
+    df["intensity"] = df["Emissions_tCO2"] / df["Generation_MWh"]
 
-    # 2) Basit benchmark (ortalama yoğunluk → alpha ile smoothing)
-    ort_intensity = df["Emissions_tCO2"].sum() / df["Generation_MWh"].sum()
-    benchmark_intensity = alpha * ort_intensity
-    df["benchmark_intensity"] = benchmark_intensity
+    # FUEL-TYPE SPECIFIC BENCHMARK
+    benchmark_map = {}
+    for ft in df["FuelType"].unique():
+        subset = df[df["FuelType"] == ft]
+        avg_intensity = subset["Emissions_tCO2"].sum() / subset["Generation_MWh"].sum()
+        benchmark_map[ft] = alpha * avg_intensity
 
-    # 3) Ücretsiz tahsis ve net ETS yükümlülüğü
-    df["free_allocation_tCO2"] = df["benchmark_intensity"] * df["Generation_MWh"] * (1 - agk_orani)
-    df["net_ets_obligation_tCO2"] = df["Emissions_tCO2"] - df["free_allocation_tCO2"]
-    df["net_ets_obligation_tCO2"] = df["net_ets_obligation_tCO2"].clip(lower=0)
+    # Santral bazında benchmark ata
+    df["benchmark"] = df["FuelType"].map(benchmark_map)
 
-    # 4) Fiyat ve maliyet
-    carbon_price = tavan_fiyat
-    df["carbon_price_€/tCO2"] = carbon_price
-    df["ets_cost_€"] = df["net_ets_obligation_tCO2"] * df["carbon_price_€/tCO2"]
-    df["ets_cost_€/MWh"] = df["ets_cost_€"] / df["Generation_MWh"]
+    # Ücretsiz tahsis
+    df["free_alloc"] = df["Generation_MWh"] * df["benchmark"] * (1 - agk_orani)
 
-    # TL cinsinden (örnek kur: 35 TL/€)
-    kur = 35
-    df["ets_cost_TL/MWh"] = df["ets_cost_€/MWh"] * kur
+    # Net ETS pozisyonu
+    df["net_ets"] = df["Emissions_tCO2"] - df["free_alloc"]
 
-    show_cols = [
-        "Plant",
-        "Emissions_tCO2",
-        "Generation_MWh",
-        "intensity_tCO2_per_MWh",
-        "benchmark_intensity",
-        "free_allocation_tCO2",
-        "net_ets_obligation_tCO2",
-        "carbon_price_€/tCO2",
-        "ets_cost_€/MWh",
-        "ets_cost_TL/MWh",
-    ]
+    # CLEARING PRICE → ALL PLANTS TOGETHER
+    clearing_price = market_clearing_price(df["net_ets"].values, price_cap)
 
-    sonuc_df = df[show_cols]
+    # Maliyet
+    df["carbon_price"] = clearing_price
+    df["ets_cost_total_€"] = df["net_ets"].clip(lower=0) * clearing_price
+    df["ets_cost_€/MWh"] = df["ets_cost_total_€"] / df["Generation_MWh"]
 
-    return sonuc_df
+    return df, benchmark_map, clearing_price
