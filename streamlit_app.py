@@ -8,7 +8,6 @@ from openpyxl.chart.label import DataLabelList
 
 from ets_model import ets_hesapla
 
-
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
 st.title("ETS Geliştirme Modülü V001")
@@ -228,12 +227,12 @@ if st.button("Run ETS Model"):
         curve_df = build_market_curve(sonuc_df, price_min, price_max, step=1)
 
         # Cashflow top 20 (grafik için)
-        cashflow_top = (
+        cashflow_top20 = (
             sonuc_df[["Plant", "FuelType", "ets_net_cashflow_€"]]
             .copy()
             .sort_values("ets_net_cashflow_€", ascending=False)
+            .head(20)
         )
-        cashflow_top20 = cashflow_top.head(20)
 
         # -------------------------
         # EXCEL RAPOR OLUŞTUR + GRAFİK EKLE
@@ -290,49 +289,31 @@ if st.button("Run ETS Model"):
             # ----- Charts -----
             wb = writer.book
 
-            # 1) Supply–Demand Line Chart
-           # 1) Supply–Demand Line Chart
-ws_curve = wb["Market_Curve"]
-line = LineChart()
-line.title = "Market Supply–Demand Curve"
-line.y_axis.title = "Volume (tCO₂)"
-line.x_axis.title = "Price (€/tCO₂)"
+            # 1) Supply–Demand Line Chart (Market_Curve)
+            ws_curve = wb["Market_Curve"]
+            line = LineChart()
+            line.title = "Market Supply–Demand Curve"
+            line.y_axis.title = "Volume (tCO₂)"
+            line.x_axis.title = "Price (€/tCO₂)"
 
-# Data range: columns B and C; categories: column A
-data = Reference(ws_curve, min_col=2, min_row=1, max_col=3, max_row=ws_curve.max_row)
-cats = Reference(ws_curve, min_col=1, min_row=2, max_row=ws_curve.max_row)
-line.add_data(data, titles_from_data=True)
-line.set_categories(cats)
-line.height = 12
-line.width = 24
+            data = Reference(ws_curve, min_col=2, min_row=1, max_col=3, max_row=ws_curve.max_row)
+            cats = Reference(ws_curve, min_col=1, min_row=2, max_row=ws_curve.max_row)
+            line.add_data(data, titles_from_data=True)
+            line.set_categories(cats)
+            line.height = 12
+            line.width = 24
 
-# Clearing price helper series (yatay referans çizgisi gibi davranır)
-ws_curve["D1"] = "Clearing_Price"
-for r in range(2, ws_curve.max_row + 1):
-    ws_curve[f"D{r}"] = float(clearing_price)
-
-line.add_data(
-    Reference(ws_curve, min_col=4, min_row=1, max_row=ws_curve.max_row),
-    titles_from_data=True
-)
-
-# Chart'ı SADECE 1 KEZ ekle
-ws_curve.add_chart(line, "E2")
-
-
-            # Clearing price line (as a helper column so it's visible)
-            # We'll add a column D = Clearing_Price and plot it as a vertical marker-like line
+            # Clearing price helper series (görsel referans)
             ws_curve["D1"] = "Clearing_Price"
             for r in range(2, ws_curve.max_row + 1):
                 ws_curve[f"D{r}"] = float(clearing_price)
 
-            line2 = LineChart()
-            line2.add_data(
+            line.add_data(
                 Reference(ws_curve, min_col=4, min_row=1, max_row=ws_curve.max_row),
-                titles_from_data=True,
+                titles_from_data=True
             )
-            line2.set_categories(cats)
-            line += line2  # overlay
+
+            # Chart'ı SADECE 1 KEZ ekle
             ws_curve.add_chart(line, "E2")
 
             # 2) Cashflow Bar Chart (Top 20)
@@ -343,15 +324,15 @@ ws_curve.add_chart(line, "E2")
             bar.y_axis.title = "€"
             bar.x_axis.title = "Plant"
 
-            # Data: net cashflow column C, categories: Plant column A
             data_cf = Reference(ws_cf, min_col=3, min_row=1, max_row=ws_cf.max_row)
             cats_cf = Reference(ws_cf, min_col=1, min_row=2, max_row=ws_cf.max_row)
             bar.add_data(data_cf, titles_from_data=True)
             bar.set_categories(cats_cf)
             bar.height = 12
             bar.width = 28
+
             bar.dataLabels = DataLabelList()
-            bar.dataLabels.showVal = False  # çok kalabalık olmasın
+            bar.dataLabels.showVal = False
 
             ws_cf.add_chart(bar, "E2")
 
