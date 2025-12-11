@@ -127,7 +127,20 @@ def ets_hesapla(
 
     # 8) ETS maliyetleri
     df["carbon_price"] = clearing_price
-    df["ets_cost_total_€"] = df["net_ets"].clip(lower=0) * clearing_price
-    df["ets_cost_€/MWh"] = df["ets_cost_total_€"] / df["Generation_MWh"]
+
+# Alıcı maliyeti (net_ets > 0)
+df["ets_cost_total_€"] = df["net_ets"].clip(lower=0) * clearing_price
+
+# Satıcı geliri (net_ets < 0)
+df["ets_revenue_total_€"] = (-df["net_ets"]).clip(lower=0) * clearing_price
+
+# Net nakit akışı: + gelir, - maliyet
+df["ets_net_cashflow_€"] = df["ets_revenue_total_€"] - df["ets_cost_total_€"]
+
+# MWh bazına indirgeme
+df["ets_cost_€/MWh"] = df["ets_cost_total_€"] / df["Generation_MWh"]
+df["ets_revenue_€/MWh"] = df["ets_revenue_total_€"] / df["Generation_MWh"]
+df["ets_net_cashflow_€/MWh"] = df["ets_net_cashflow_€"] / df["Generation_MWh"]
+
 
     return df, benchmark_map, clearing_price
