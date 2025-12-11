@@ -36,7 +36,7 @@ agk = st.sidebar.slider(
     max_value=1.0,
     value=0.50,
     step=0.05,
-    help="Tahsis Yoğunluğuᵢ = B_yakıt + AGK × (Iᵢ − B_yakıt). 0 → saf benchmark, 1 → santral yoğunluğu."
+    help="Tahsis Yoğunluğuᵢ = B_yakıt + AGK × (Iᵢ − B_yakıt). 1 → saf benchmark, 0 → santral yoğunluğu."
 )
 
 # -----------------------------
