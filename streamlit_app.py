@@ -1,8 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from io import BytesIO
 
+from openpyxl.chart import LineChart, BarChart, Reference
+from openpyxl.chart.label import DataLabelList
+
 from ets_model import ets_hesapla
+
 
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
@@ -14,7 +19,7 @@ Bu arayüz:
 - Yakıt türüne göre benchmark hesaplar,
 - AGK ile tahsis yoğunluğunu belirler,
 - Tüm tesisleri tek piyasada birleştirip **BID/ASK** eğrileriyle **clearing price** üretir,
-- Sonuçları **Excel rapor** olarak indirir.
+- Sonuçları **Excel rapor + grafik** olarak indirir.
 """
 )
 
@@ -88,6 +93,43 @@ def read_all_sheets(file) -> pd.DataFrame:
         df["FuelType"] = sheet
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
+
+
+def build_market_curve(sonuc_df: pd.DataFrame, price_min: int, price_max: int, step: int = 1) -> pd.DataFrame:
+    """
+    Aynı lineer BID/ASK mantığıyla her fiyat seviyesinde toplam arz ve talebi üretir.
+    Excel'de Supply–Demand grafiği için kullanılır.
+    """
+    prices = np.arange(price_min, price_max + step, step)
+
+    buyers = sonuc_df[sonuc_df["net_ets"] > 0][["net_ets", "p_bid"]].copy()
+    sellers = sonuc_df[sonuc_df["net_ets"] < 0][["net_ets", "p_ask"]].copy()
+
+    rows = []
+    for p in prices:
+        # Demand
+        if not buyers.empty:
+            q0 = buyers["net_ets"].to_numpy()
+            p_bid = buyers["p_bid"].to_numpy()
+            denom = np.maximum(p_bid - price_min, 1e-6)
+            frac = 1.0 - (p - price_min) / denom
+            demand = float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
+        else:
+            demand = 0.0
+
+        # Supply
+        if not sellers.empty:
+            q0 = (-sellers["net_ets"]).to_numpy()
+            p_ask = sellers["p_ask"].to_numpy()
+            denom = np.maximum(price_max - p_ask, 1e-6)
+            frac = (p - p_ask) / denom
+            supply = float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
+        else:
+            supply = 0.0
+
+        rows.append({"Price": float(p), "Total_Demand": demand, "Total_Supply": supply})
+
+    return pd.DataFrame(rows)
 
 
 if uploaded is None:
@@ -182,8 +224,19 @@ if st.button("Run ETS Model"):
         st.subheader("Tüm Sonuçlar (ham tablo)")
         st.dataframe(sonuc_df, use_container_width=True)
 
+        # Market curve verisi (grafik için)
+        curve_df = build_market_curve(sonuc_df, price_min, price_max, step=1)
+
+        # Cashflow top 20 (grafik için)
+        cashflow_top = (
+            sonuc_df[["Plant", "FuelType", "ets_net_cashflow_€"]]
+            .copy()
+            .sort_values("ets_net_cashflow_€", ascending=False)
+        )
+        cashflow_top20 = cashflow_top.head(20)
+
         # -------------------------
-        # EXCEL RAPOR OLUŞTUR + İNDİR
+        # EXCEL RAPOR OLUŞTUR + GRAFİK EKLE
         # -------------------------
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -228,16 +281,78 @@ if st.button("Run ETS Model"):
             buyers_df.to_excel(writer, sheet_name="Buyers", index=False)
             sellers_df.to_excel(writer, sheet_name="Sellers", index=False)
 
+            # Market curve
+            curve_df.to_excel(writer, sheet_name="Market_Curve", index=False)
+
+            # Cashflow top
+            cashflow_top20.to_excel(writer, sheet_name="Cashflow_Top20", index=False)
+
+            # ----- Charts -----
+            wb = writer.book
+
+            # 1) Supply–Demand Line Chart
+            ws_curve = wb["Market_Curve"]
+            line = LineChart()
+            line.title = "Market Supply–Demand Curve"
+            line.y_axis.title = "Volume (tCO₂)"
+            line.x_axis.title = "Price (€/tCO₂)"
+
+            # Data range: columns B and C; categories: column A
+            data = Reference(ws_curve, min_col=2, min_row=1, max_col=3, max_row=ws_curve.max_row)
+            cats = Reference(ws_curve, min_col=1, min_row=2, max_row=ws_curve.max_row)
+            line.add_data(data, titles_from_data=True)
+            line.set_categories(cats)
+            line.height = 12
+            line.width = 24
+
+            # Add to sheet
+            ws_curve.add_chart(line, "E2")
+
+            # Clearing price line (as a helper column so it's visible)
+            # We'll add a column D = Clearing_Price and plot it as a vertical marker-like line
+            ws_curve["D1"] = "Clearing_Price"
+            for r in range(2, ws_curve.max_row + 1):
+                ws_curve[f"D{r}"] = float(clearing_price)
+
+            line2 = LineChart()
+            line2.add_data(
+                Reference(ws_curve, min_col=4, min_row=1, max_row=ws_curve.max_row),
+                titles_from_data=True,
+            )
+            line2.set_categories(cats)
+            line += line2  # overlay
+            ws_curve.add_chart(line, "E2")
+
+            # 2) Cashflow Bar Chart (Top 20)
+            ws_cf = wb["Cashflow_Top20"]
+            bar = BarChart()
+            bar.type = "col"
+            bar.title = "Top 20 Plants – ETS Net Cashflow (€)"
+            bar.y_axis.title = "€"
+            bar.x_axis.title = "Plant"
+
+            # Data: net cashflow column C, categories: Plant column A
+            data_cf = Reference(ws_cf, min_col=3, min_row=1, max_row=ws_cf.max_row)
+            cats_cf = Reference(ws_cf, min_col=1, min_row=2, max_row=ws_cf.max_row)
+            bar.add_data(data_cf, titles_from_data=True)
+            bar.set_categories(cats_cf)
+            bar.height = 12
+            bar.width = 28
+            bar.dataLabels = DataLabelList()
+            bar.dataLabels.showVal = False  # çok kalabalık olmasın
+
+            ws_cf.add_chart(bar, "E2")
+
         output.seek(0)
 
         st.download_button(
-            label="Download ETS Report (Excel)",
+            label="Download ETS Report (Excel + Charts)",
             data=output,
-            file_name="ETS_Report_Stable.xlsx",
+            file_name="ETS_Report_Stable_WithCharts.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        # (opsiyonel) CSV de kalsın istersen
+        # CSV opsiyonel kalsın
         csv_bytes = sonuc_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "Download results as CSV",
