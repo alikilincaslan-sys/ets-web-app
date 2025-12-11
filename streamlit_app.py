@@ -3,7 +3,6 @@ import pandas as pd
 
 from ets_model import ets_hesapla
 
-
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
 st.title("ETS Geliştirme Modülü V001")
@@ -28,7 +27,7 @@ price_min, price_max = st.sidebar.slider(
     max_value=200,
     value=(0, 20),
     step=1,
-    help="Clearing price bu aralık içinde bulunur."
+    help="Clearing price bu aralık içinde bulunur.",
 )
 
 agk = st.sidebar.slider(
@@ -37,7 +36,7 @@ agk = st.sidebar.slider(
     max_value=1.0,
     value=0.50,
     step=0.05,
-    help="T_i = B + AGK*(I - B)"
+    help="T_i = B + AGK*(I - B)",
 )
 
 st.sidebar.subheader("Market Calibration")
@@ -48,7 +47,7 @@ slope_bid = st.sidebar.slider(
     max_value=500,
     value=150,
     step=10,
-    help="Alıcıların (kirli tesis) ödeme isteği hassasiyeti."
+    help="Alıcıların (kirli tesis) ödeme isteği hassasiyeti.",
 )
 
 slope_ask = st.sidebar.slider(
@@ -57,7 +56,7 @@ slope_ask = st.sidebar.slider(
     max_value=500,
     value=150,
     step=10,
-    help="Satıcıların (temiz tesis) satış isteği hassasiyeti."
+    help="Satıcıların (temiz tesis) satış isteği hassasiyeti.",
 )
 
 spread = st.sidebar.slider(
@@ -66,7 +65,7 @@ spread = st.sidebar.slider(
     max_value=10.0,
     value=0.0,
     step=0.5,
-    help="0 bırakabilirsin. Spread eklemek bid/ask aynı görünmesini azaltır."
+    help="0 bırakabilirsin. Spread eklemek bid/ask aynı görünmesini azaltır.",
 )
 
 st.sidebar.divider()
@@ -78,6 +77,7 @@ st.sidebar.caption("Sekme adı FuelType olarak alınır.")
 # -------------------------
 uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
 
+
 def read_all_sheets(file) -> pd.DataFrame:
     xls = pd.ExcelFile(file)
     frames = []
@@ -86,6 +86,7 @@ def read_all_sheets(file) -> pd.DataFrame:
         df["FuelType"] = sheet
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
+
 
 if uploaded is None:
     st.info("Lütfen bir Excel yükleyin.")
@@ -118,54 +119,79 @@ if st.button("Run ETS Model"):
         st.success(f"Clearing Price: {clearing_price:.2f} €/tCO₂")
 
         st.subheader("Benchmark (yakıt bazında)")
-        bench_df = pd.DataFrame(
-            [{"FuelType": k, "Benchmark_B_fuel": v} for k, v in benchmark_map.items()]
-        ).sort_values("FuelType")
+        bench_df = (
+            pd.DataFrame(
+                [{"FuelType": k, "Benchmark_B_fuel": v} for k, v in benchmark_map.items()]
+            )
+            .sort_values("FuelType")
+            .reset_index(drop=True)
+        )
         st.dataframe(bench_df, use_container_width=True)
-total_cost = sonuc_df["ets_cost_total_€"].sum()
-total_revenue = sonuc_df["ets_revenue_total_€"].sum()
-net_cashflow = sonuc_df["ets_net_cashflow_€"].sum()
 
-c1, c2, c3 = st.columns(3)
+        # -------------------------
+        # KPI Özetleri (Gelir/Maliyet)
+        # -------------------------
+        total_cost = float(sonuc_df["ets_cost_total_€"].sum())
+        total_revenue = float(sonuc_df["ets_revenue_total_€"].sum())
+        net_cashflow = float(sonuc_df["ets_net_cashflow_€"].sum())
 
-c1.metric("Toplam ETS Maliyeti (€)", f"{total_cost:,.0f}")
-c2.metric("Toplam ETS Geliri (€)", f"{total_revenue:,.0f}")
-c3.metric("Net Nakit Akışı (€)", f"{net_cashflow:,.0f}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Toplam ETS Maliyeti (€)", f"{total_cost:,.0f}")
+        c2.metric("Toplam ETS Geliri (€)", f"{total_revenue:,.0f}")
+        c3.metric("Net Nakit Akışı (€)", f"{net_cashflow:,.0f}")
 
-       st.subheader("ETS Sonuçları – Alıcılar (Net ETS > 0)")
+        # -------------------------
+        # Alıcılar / Satıcılar
+        # -------------------------
+        st.subheader("ETS Sonuçları – Alıcılar (Net ETS > 0)")
+        buyers_df = sonuc_df[sonuc_df["net_ets"] > 0].copy()
+        st.dataframe(
+            buyers_df[
+                [
+                    "Plant",
+                    "FuelType",
+                    "net_ets",
+                    "carbon_price",
+                    "ets_cost_total_€",
+                    "ets_cost_€/MWh",
+                    "ets_net_cashflow_€",
+                    "ets_net_cashflow_€/MWh",
+                ]
+            ],
+            use_container_width=True,
+        )
 
-buyers_df = sonuc_df[sonuc_df["net_ets"] > 0].copy()
-st.dataframe(
-    buyers_df[
-        [
-            "Plant",
-            "FuelType",
-            "net_ets",
-            "carbon_price",
-            "ets_cost_total_€",
-            "ets_cost_€/MWh",
-        ]
-    ],
-    use_container_width=True,
-)
+        st.subheader("ETS Sonuçları – Satıcılar (Net ETS < 0)")
+        sellers_df = sonuc_df[sonuc_df["net_ets"] < 0].copy()
+        st.dataframe(
+            sellers_df[
+                [
+                    "Plant",
+                    "FuelType",
+                    "net_ets",
+                    "carbon_price",
+                    "ets_revenue_total_€",
+                    "ets_revenue_€/MWh",
+                    "ets_net_cashflow_€",
+                    "ets_net_cashflow_€/MWh",
+                ]
+            ],
+            use_container_width=True,
+        )
 
-st.subheader("ETS Sonuçları – Satıcılar (Net ETS < 0)")
+        # -------------------------
+        # Tüm sonuçlar (opsiyonel)
+        # -------------------------
+        st.subheader("Tüm Sonuçlar (ham tablo)")
+        st.dataframe(sonuc_df, use_container_width=True)
 
-sellers_df = sonuc_df[sonuc_df["net_ets"] < 0].copy()
-st.dataframe(
-    sellers_df[
-        [
-            "Plant",
-            "FuelType",
-            "net_ets",
-            "carbon_price",
-            "ets_revenue_total_€",
-            "ets_revenue_€/MWh",
-        ]
-    ],
-    use_container_width=True,
-)
-
+        csv_bytes = sonuc_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "Download results as CSV",
+            data=csv_bytes,
+            file_name="ets_results.csv",
+            mime="text/csv",
+        )
 
     except Exception as e:
         st.error(f"Model çalışırken hata oluştu: {e}")
