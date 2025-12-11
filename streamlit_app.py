@@ -53,4 +53,4 @@ else:
         df_all = pd.concat(all_sheets, ignore_index=True)
 
     except Exception as e:
-        st.error(f"Excel okunurken
+       st.error(f"Excel okunurken hata oluştu: {e}")
