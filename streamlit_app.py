@@ -30,146 +30,54 @@ st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
 st.title("ETS Geliştirme Modülü V001")
 
-    st.write(
-    """
+# -------------------------
+# Model açıklaması (tek blok - düzeltilmiş)
+# -------------------------
+with st.expander("📌 Model Açıklaması / Sliderlar neyi değiştiriyor?", expanded=True):
+    st.markdown(
+        """
 ### ETS Geliştirme Modülü – Model Açıklaması
 
-Bu arayüz, elektrik üretim sektörüne yönelik **tesis bazlı ve piyasa tutarlı**
-bir **Emisyon Ticaret Sistemi (ETS)** simülasyonu oluşturmak için tasarlanmıştır.
+Bu arayüz, elektrik üretim sektörüne yönelik **tesis bazlı** ve **piyasa tutarlı** bir **ETS (Emisyon Ticaret Sistemi)** simülasyonu oluşturur.
 
----
+**Veri girişi**
+- Excel’deki **tüm sekmeleri** okur ve birleştirir (**FuelType = sekme adı**).
+- Beklenen kolonlar: `Plant`, `Generation_MWh`, `Emissions_tCO2`
 
-## 📥 Veri Girişi
-- Excel dosyasındaki **tüm sekmeleri** otomatik olarak okur ve birleştirir.
-- Her sekme adı **FuelType (yakıt türü)** olarak modele eklenir.
-- Beklenen temel kolonlar:
-  - `Plant`
-  - `Generation_MWh`
-  - `Emissions_tCO2`
+**Benchmark (yakıt bazlı)**
+- Yakıt türü içinde üretim ağırlıklı benchmark hesaplanır.
+- **Benchmark Top %**: Yakıt içindeki “en düşük intensity” dilimini seçer:
+  - 100% = tüm tesisler (varsayılan)
+  - 10% / 20% = en temiz dilim (daha sıkı benchmark)
 
----
+**AGK (Adil Geçiş Katsayısı)**
+- Tahsis yoğunluğu formülü:
+  - **Tᵢ = Iᵢ + AGK × (B_fuel − Iᵢ)**
+- AGK=1 → Benchmark’a tam yaklaşır (varsayılan)
+- AGK=0 → Tesis kendi yoğunluğunda kalır
 
-## 📊 Benchmark Hesaplama (Yakıt Bazlı)
-- Her yakıt türü için **üretim ağırlıklı emisyon benchmarkı** hesaplanır.
-- Benchmark, seçilen **“Top % Benchmark”** ayarına göre belirlenir:
-  - **%100 (varsayılan)** → tüm tesisler dahil
-  - **%20** → en temiz %20’lik üretim dilimi
-  - **%10** → yalnızca en verimli tesisler
-- Bu mekanizma, **yakıt içi verimliliği** ön plana çıkarır.
+**Karbon fiyatı (tek piyasa)**
+- Tüm tesisler tek piyasada birleşir ve **tek karbon fiyatı** oluşur.
+- **Price Method**
+  - Market Clearing: arz-talep kesişimi
+  - ACC: alıcıların p_bid değerlerinin (net yükümlülükle ağırlıklı) ortalaması
+- **Carbon Price Range (min–max)**: fiyat bu aralıkta kalır.
 
----
+**Market Calibration**
+- β_bid: alıcıların fiyat hassasiyeti
+- β_ask: satıcıların fiyat hassasiyeti
+- Spread: BID/ASK ayrışması için ek fark
 
-## ⚖️ Adil Geçiş Katsayısı (AGK)
-- AGK, ücretsiz tahsis yoğunluğunu **tesis yoğunluğu ile benchmark arasında**
-yumuşatır.
+**Veri Temizleme (opsiyonel)**
+- Cleaning OFF ise sadece temel temizlik yapılır.
+- Cleaning ON ise intensity outlier’lar benchmark bandına göre filtrelenir:
+  - lo = B × (1 − L)
+  - hi = B × (1 + U)
 
-Formül:
-> **Tᵢ = Iᵢ + AGK × (B_fuel − Iᵢ)**
-
-- **AGK = 1.00 (varsayılan)**  
-  → Tesis tamamen yakıt benchmarkına yaklaşır  
-- **AGK = 0.00**  
-  → Tesis kendi emisyon yoğunluğunda kalır  
-- Bu yapı, **adil geçiş** ve **kademeli uyum** senaryolarını temsil eder.
-
----
-
-## 🧹 Veri Temizleme (Opsiyonel)
-- Veri temizleme **açılıp kapatılabilir**.
-- Yakıt bazında aşırı düşük veya aşırı yüksek emisyon yoğunlukları filtrelenir.
-- Filtre bandı benchmark’a göre belirlenir:
-  - Alt sınır: `(1 − L) × Benchmark`
-  - Üst sınır: `(1 + U) × Benchmark`
-- Temizleme **kapalıysa**, ham veriyle model çalışır.
-
----
-
-## 💱 ETS Piyasa Modellemesi
-- Tüm tesisler **tek bir birleşik ETS piyasasına** dahil edilir.
-- Her tesis için:
-  - **Net ETS pozisyonu** hesaplanır
-    - Pozitif → alıcı (yükümlü)
-    - Negatif → satıcı (fazla tahsisli)
-- BID (talep) ve ASK (arz) eğrileri tesis bazında oluşturulur.
-- Piyasa kalibrasyonu:
-  - **β_bid** → alıcıların fiyat hassasiyeti
-  - **β_ask** → satıcıların fiyat hassasiyeti
-  - **Spread** → BID/ASK ayrışmasını yumuşatır
-
----
-
-## 💶 Karbon Fiyatı Hesaplama Yöntemi
-Kullanıcı tek bir seçimle fiyatlama yöntemini belirler:
-
-### 🔹 Market Clearing (Varsayılan)
-- Arz (ASK) ve talep (BID) eğrilerinin **kesiştiği fiyat**
-- **AB ETS mantığına en yakın yöntem**
-- Piyasa temelli, dinamik ve rekabetçi
-
-### 🔹 Average Compliance Cost (ACC)
-- Sadece **yükümlü tesislerin (Net ETS > 0)** ödeme isteğine göre hesaplanır
-- Ağırlıklı ortalama maliyet yaklaşımı
-- Geçiş dönemi, politika senaryoları ve regülasyon analizleri için uygundur
-
----
-
-## 📈 Sonuçlar
-- Santral bazında:
-  - ETS maliyeti veya geliri
-  - Net nakit akışı
-  - MWh başına etkiler
-- Sistem genelinde:
-  - Clearing price
-  - Toplam ETS maliyeti
-  - Toplam ETS geliri
-  - Net sistem nakit dengesi
-
----
-
-## 📤 Çıktılar
-- Tüm sonuçlar:
-  - **Excel raporu** (çok sayfalı)
-  - Otomatik eklenen grafikler:
-    - Arz–Talep (Supply–Demand) eğrisi
-    - En yüksek nakit akışına sahip tesisler
-- İsteğe bağlı olarak:
-  - Temizlenmiş veri seti
-  - CSV çıktı
-
----
-
-## 🎯 Varsayılan (Default) Senaryo Ayarları
-- Carbon Price Range: **5 – 20 €/tCO₂**
-- AGK: **1.00**
-- Benchmark Top %: **100**
-- β_bid: **150**
-- β_ask: **150**
-- Spread: **1**
-- Veri Temizleme: **Kapalı**
-
-Bu yapı, modeli hem **akademik analiz**, hem **politika tasarımı**,  
-hem de **sektörel ETS simülasyonu** için kullanıma hazır hale getirir.
+**Çıktılar**
+- Sonuç tabloları + Excel rapor (çok sayfalı) + grafikler (Supply–Demand ve Top-20 cashflow)
 """
-)
-
-    """
-### ETS Geliştirme Modülü V001 — Ne yapar?
-
-Bu arayüz, tek bir Excel dosyasıyla **çok yakıtlı termik santraller için ETS** (Emisyon Ticaret Sistemi) simülasyonu yapar ve sonuçları **Excel rapor + grafik** olarak indirmenizi sağlar.
-
-**Özet akış**
-1) Excel’deki tüm sekmeler okunur ve birleştirilir (FuelType=sekme adı)  
-2) Yakıt bazında benchmark hesaplanır (Best % seçilebilir)  
-3) AGK ile tahsis yoğunluğu hesaplanır: **Tᵢ = Iᵢ + AGK×(B − Iᵢ)**  
-4) Ücretsiz tahsis ve net ETS pozisyonu bulunur (alıcı/satıcı)  
-5) Tüm tesisler tek piyasada toplanır ve **tek bir karbon fiyatı** üretilir  
-6) Maliyet, gelir, net nakit akışı raporlanır ve Excel’e yazdırılır  
-
-#### Carbon Price Method (Fiyat Hesaplama Yöntemi)
-- **Market Clearing (Supply–Demand):** BID/ASK eğrileriyle toplam arz-talep oluşturulur, kesişimden fiyat bulunur.
-- **Average Compliance Cost (ACC):** Sadece alıcıların (NetETS>0) **p_bid** değerleri, net yükümlülükle ağırlıklandırılarak ortalama fiyat hesaplanır ve fiyat bandı içinde kırpılır.
-"""
-)
+    )
 
 # -------------------------
 # Sidebar: Reset
@@ -210,7 +118,7 @@ agk = st.sidebar.slider(
     value=float(st.session_state.get("agk", DEFAULTS["agk"])),
     step=0.05,
     key="agk",
-    help="AGK yönü: AGK=1→Benchmark, AGK=0→Tesis yoğunluğu (Tᵢ = Iᵢ + AGK×(B − Iᵢ))",
+    help="AGK=1→Benchmark, AGK=0→Tesis yoğunluğu. Tᵢ = Iᵢ + AGK×(B − Iᵢ)",
 )
 st.sidebar.caption("Default: AGK = 1.00")
 
@@ -220,7 +128,7 @@ benchmark_top_pct = st.sidebar.select_slider(
     options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
     value=int(st.session_state.get("benchmark_top_pct", DEFAULTS["benchmark_top_pct"])),
     key="benchmark_top_pct",
-    help="Yakıt bazında benchmark, intensity düşük olan en iyi dilimden (production-share) hesaplanır. 100 = tüm tesisler.",
+    help="Yakıt bazında benchmark, intensity düşük olan en iyi dilimden hesaplanır. 100=tüm tesisler.",
 )
 st.sidebar.caption("Default: 100")
 
@@ -235,10 +143,7 @@ price_method = st.sidebar.selectbox(
     options=_methods,
     index=_methods.index(_default_method),
     key="price_method",
-    help=(
-        "Market Clearing: arz-talep kesişimi.\n"
-        "ACC: alıcıların p_bid değerlerinin (NetETS ile ağırlıklı) ortalaması."
-    ),
+    help="Market Clearing: arz-talep kesişimi. ACC: alıcıların p_bid (net_ets ile ağırlıklı) ortalaması.",
 )
 st.sidebar.caption("Default: Market Clearing")
 
@@ -290,7 +195,7 @@ do_clean = st.sidebar.toggle(
     "Apply cleaning rules?",
     value=bool(st.session_state.get("do_clean", DEFAULTS["do_clean"])),
     key="do_clean",
-    help="Kapalıysa (Hayır), veri temizleme/outlier filtresi uygulanmaz.",
+    help="Kapalıysa (Hayır), outlier filtresi uygulanmaz.",
 )
 st.sidebar.caption("Default: OFF")
 
@@ -316,7 +221,6 @@ upper_pct = st.sidebar.slider(
 )
 st.sidebar.caption("Default: 2.0")
 
-
 # -------------------------
 # Excel upload
 # -------------------------
@@ -341,7 +245,6 @@ def build_market_curve(sonuc_df: pd.DataFrame, price_min: int, price_max: int, s
 
     rows = []
     for p in prices:
-        # Demand
         if not buyers.empty:
             q0 = buyers["net_ets"].to_numpy()
             p_bid_arr = buyers["p_bid"].to_numpy()
@@ -351,7 +254,6 @@ def build_market_curve(sonuc_df: pd.DataFrame, price_min: int, price_max: int, s
         else:
             demand = 0.0
 
-        # Supply
         if not sellers.empty:
             q0 = (-sellers["net_ets"]).to_numpy()
             p_ask_arr = sellers["p_ask"].to_numpy()
@@ -380,7 +282,7 @@ st.subheader("Yüklenen veri (ham / birleştirilmiş)")
 st.dataframe(df_all_raw.head(50), use_container_width=True)
 
 # -------------------------
-# Cleaning (basic always + optional outlier)
+# Cleaning
 # -------------------------
 st.subheader("Veri Temizleme (opsiyonel)")
 
@@ -409,7 +311,7 @@ if do_clean:
         f"Outlier filtresi: {before - after} satır çıkarıldı "
         f"({before:,} → {after:,}). Band: [{1-lower_pct:.2f}B, {1+upper_pct:.2f}B]"
     )
-    if len(removed_df) > 0:
+    if not removed_df.empty:
         with st.expander("Çıkarılan outlier satırlar (önizleme)"):
             st.dataframe(removed_df.head(200), use_container_width=True)
 else:
@@ -432,13 +334,12 @@ if st.button("Run ETS Model"):
             slope_ask=slope_ask,
             spread=spread,
             benchmark_top_pct=int(benchmark_top_pct),
-            price_method=price_method,  # ✅ yeni
+            price_method=price_method,
         )
 
         st.success(f"Carbon Price ({price_method}): {clearing_price:.2f} €/tCO₂")
         st.caption(f"Benchmark method: Best {benchmark_top_pct}% (production-share, by lowest intensity)")
 
-        # Benchmark table
         st.subheader("Benchmark (yakıt bazında)")
         bench_df = (
             pd.DataFrame([{"FuelType": k, "Benchmark_B_fuel": v} for k, v in benchmark_map.items()])
@@ -447,7 +348,6 @@ if st.button("Run ETS Model"):
         )
         st.dataframe(bench_df, use_container_width=True)
 
-        # KPIs
         total_cost = float(sonuc_df["ets_cost_total_€"].sum())
         total_revenue = float(sonuc_df["ets_revenue_total_€"].sum())
         net_cashflow = float(sonuc_df["ets_net_cashflow_€"].sum())
@@ -457,7 +357,6 @@ if st.button("Run ETS Model"):
         c2.metric("Toplam ETS Geliri (€)", f"{total_revenue:,.0f}")
         c3.metric("Net Nakit Akışı (€)", f"{net_cashflow:,.0f}")
 
-        # Buyers / Sellers
         st.subheader("ETS Sonuçları – Alıcılar (Net ETS > 0)")
         buyers_df = sonuc_df[sonuc_df["net_ets"] > 0].copy()
         st.dataframe(
@@ -506,9 +405,6 @@ if st.button("Run ETS Model"):
             .head(20)
         )
 
-        # -------------------------
-        # Excel report + charts
-        # -------------------------
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             summary_df = pd.DataFrame(
@@ -561,13 +457,11 @@ if st.button("Run ETS Model"):
             sellers_df.to_excel(writer, sheet_name="Sellers", index=False)
             curve_df.to_excel(writer, sheet_name="Market_Curve", index=False)
             cashflow_top20.to_excel(writer, sheet_name="Cashflow_Top20", index=False)
-
             if not removed_df.empty:
                 removed_df.to_excel(writer, sheet_name="Removed_Outliers", index=False)
 
             wb = writer.book
 
-            # Supply–Demand chart
             ws_curve = wb["Market_Curve"]
             line = LineChart()
             line.title = "Market Supply–Demand Curve"
@@ -587,12 +481,10 @@ if st.button("Run ETS Model"):
 
             line.add_data(
                 Reference(ws_curve, min_col=4, min_row=1, max_row=ws_curve.max_row),
-                titles_from_data=True
+                titles_from_data=True,
             )
-
             ws_curve.add_chart(line, "E2")
 
-            # Cashflow chart
             ws_cf = wb["Cashflow_Top20"]
             bar = BarChart()
             bar.type = "col"
