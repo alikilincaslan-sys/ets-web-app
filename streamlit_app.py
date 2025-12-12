@@ -26,7 +26,6 @@ DEFAULTS = {
     "upper_pct": 2.0,
 }
 
-
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
 st.title("ETS Geliştirme Modülü V001")
