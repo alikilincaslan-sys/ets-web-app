@@ -20,7 +20,6 @@ Bu arayüz:
 - Yakıt türüne göre benchmark hesaplar,
 - AGK ile tahsis yoğunluğunu belirler,
 - Tüm tesisleri tek piyasada birleştirip **BID/ASK** eğrileriyle **clearing price** üretir,
-- (Opsiyonel) veri temizleme uygular,
 - Sonuçları **Excel rapor + grafik** olarak indirir.
 """
 )
@@ -46,6 +45,16 @@ agk = st.sidebar.slider(
     value=0.50,
     step=0.05,
     help="AGK yönü: AGK=1→Benchmark, AGK=0→Tesis yoğunluğu (T_i = I + AGK*(B - I))",
+)
+
+# ✅ Benchmark seçimi
+st.sidebar.subheader("Benchmark Settings")
+
+benchmark_top_pct = st.sidebar.select_slider(
+    "Benchmark = Best plants (by intensity) %",
+    options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+    value=100,
+    help="Yakıt bazında benchmark, intensity düşük olan en iyi dilimden (production-share) hesaplanır. 100 = tüm tesisler.",
 )
 
 st.sidebar.subheader("Market Calibration")
@@ -127,10 +136,6 @@ def read_all_sheets(file) -> pd.DataFrame:
 
 
 def build_market_curve(sonuc_df: pd.DataFrame, price_min: int, price_max: int, step: int = 1) -> pd.DataFrame:
-    """
-    BID/ASK lineer mantığıyla her fiyat seviyesinde toplam arz-talep üretir.
-    Excel Supply–Demand grafiği için.
-    """
     prices = np.arange(price_min, price_max + step, step)
 
     buyers = sonuc_df[sonuc_df["net_ets"] > 0][["net_ets", "p_bid"]].copy()
@@ -167,7 +172,6 @@ if uploaded is None:
     st.info("Lütfen bir Excel yükleyin.")
     st.stop()
 
-# Ham veri oku
 try:
     df_all_raw = read_all_sheets(uploaded)
 except Exception as e:
@@ -178,14 +182,13 @@ st.subheader("Yüklenen veri (ham / birleştirilmiş)")
 st.dataframe(df_all_raw.head(50), use_container_width=True)
 
 # -------------------------
-# Temizleme aşaması (opsiyonel) - DOĞRU ENTEGRE
+# Temizleme aşaması (opsiyonel)
 # -------------------------
 st.subheader("Veri Temizleme (opsiyonel)")
 
 df_all = df_all_raw.copy()
 
 try:
-    # Temel temizlik her durumda uygulanır (kolon tipleri, negatif/0 üretim vb.)
     df_all = clean_ets_input(df_all)
 except Exception as e:
     st.error(f"Temel temizlikte hata: {e}")
@@ -195,7 +198,6 @@ removed_df = pd.DataFrame()
 
 if do_clean:
     before = len(df_all)
-
     try:
         df_all, removed_df = filter_intensity_outliers_by_fuel(
             df_all, lower_pct=lower_pct, upper_pct=upper_pct
@@ -205,12 +207,10 @@ if do_clean:
         st.stop()
 
     after = len(df_all)
-
     st.info(
         f"Outlier filtresi: {before - after} satır çıkarıldı "
         f"({before:,} → {after:,}). Band: [{1-lower_pct:.2f}B, {1+upper_pct:.2f}B]"
     )
-
     if len(removed_df) > 0:
         with st.expander("Çıkarılan outlier satırlar (önizleme)"):
             st.dataframe(removed_df.head(200), use_container_width=True)
@@ -219,22 +219,6 @@ else:
 
 st.subheader("Modelde kullanılacak veri (ilk 50 satır)")
 st.dataframe(df_all.head(50), use_container_width=True)
-
-# Temizlenmiş veriyi indir (opsiyon)
-with st.expander("Temizlenmiş veriyi indir (opsiyonel)"):
-    clean_out = BytesIO()
-    with pd.ExcelWriter(clean_out, engine="openpyxl") as w:
-        df_all.to_excel(w, index=False, sheet_name="Cleaned_Data")
-        if len(removed_df) > 0:
-            removed_df.to_excel(w, index=False, sheet_name="Removed_Outliers")
-    clean_out.seek(0)
-
-    st.download_button(
-        "Download Cleaned Data (Excel)",
-        data=clean_out,
-        file_name="ETS_Cleaned_Data.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
 
 # -------------------------
 # Model çalıştır
@@ -249,9 +233,12 @@ if st.button("Run ETS Model"):
             slope_bid=slope_bid,
             slope_ask=slope_ask,
             spread=spread,
+            benchmark_top_pct=int(benchmark_top_pct),   # ✅ yeni parametre
         )
 
         st.success(f"Clearing Price: {clearing_price:.2f} €/tCO₂")
+
+        st.caption(f"Benchmark method: Best {benchmark_top_pct}% (production-share, by lowest intensity)")
 
         # Benchmark tablosu
         st.subheader("Benchmark (yakıt bazında)")
@@ -342,6 +329,7 @@ if st.button("Run ETS Model"):
                         "Price Min",
                         "Price Max",
                         "AGK",
+                        "Benchmark Top %",
                         "Bid Slope",
                         "Ask Slope",
                         "Spread",
@@ -359,6 +347,7 @@ if st.button("Run ETS Model"):
                         price_min,
                         price_max,
                         agk,
+                        int(benchmark_top_pct),
                         slope_bid,
                         slope_ask,
                         spread,
@@ -379,11 +368,9 @@ if st.button("Run ETS Model"):
             curve_df.to_excel(writer, sheet_name="Market_Curve", index=False)
             cashflow_top20.to_excel(writer, sheet_name="Cashflow_Top20", index=False)
 
-            # Removed Outliers sheet (varsa)
             if not removed_df.empty:
                 removed_df.to_excel(writer, sheet_name="Removed_Outliers", index=False)
 
-            # ----- Charts -----
             wb = writer.book
 
             # 1) Supply–Demand Line Chart
@@ -400,7 +387,6 @@ if st.button("Run ETS Model"):
             line.height = 12
             line.width = 24
 
-            # Clearing price helper series
             ws_curve["D1"] = "Clearing_Price"
             for r in range(2, ws_curve.max_row + 1):
                 ws_curve[f"D{r}"] = float(clearing_price)
@@ -441,7 +427,6 @@ if st.button("Run ETS Model"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        # CSV opsiyonel
         csv_bytes = sonuc_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "Download results as CSV",
