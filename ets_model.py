@@ -4,12 +4,11 @@ import pandas as pd
 
 def _compute_benchmark_top_percent(subset: pd.DataFrame, top_pct: int) -> float:
     """
-    subset: tek yakıt (FuelType) filtresi uygulanmış df
-    top_pct: 10,20,...,100
     Benchmark = seçilen grubun üretim ağırlıklı yoğunluğu = sum(E)/sum(G)
 
-    Seçim mantığı: intensity düşük olanlardan başlayıp
-    toplam üretimin top_pct kadarı dolana kadar seçer (production-share based).
+    Seçim mantığı:
+    - intensity düşük olanlardan başlayarak sıralar
+    - toplam üretimin top_pct kadarı dolana kadar seçer (production-share based)
     """
     if subset.empty:
         return np.nan
@@ -26,7 +25,7 @@ def _compute_benchmark_top_percent(subset: pd.DataFrame, top_pct: int) -> float:
     sub["intensity"] = sub["Emissions_tCO2"] / sub["Generation_MWh"]
     sub = sub.sort_values("intensity", ascending=True)
 
-    # 100 => tüm tesisler
+    # 100% => tüm tesisler
     if top_pct >= 100:
         return float(sub["Emissions_tCO2"].sum() / sub["Generation_MWh"].sum())
 
@@ -124,6 +123,29 @@ def _market_clearing_price(df: pd.DataFrame, price_min: float, price_max: float,
     return float(price_max)
 
 
+def _average_compliance_cost_price(df: pd.DataFrame, price_min: float, price_max: float) -> float:
+    """
+    Average Compliance Cost (ACC):
+    Sadece alıcıların (NetETS>0) p_bid değerlerini, net yükümlülükle ağırlıklandırarak ortalama fiyat üretir:
+
+      P = sum(NetETS_i * p_bid_i) / sum(NetETS_i)   (NetETS>0)
+
+    Sonra [price_min, price_max] bandına kırpılır.
+    """
+    buyers = df[df["net_ets"] > 0].copy()
+    if buyers.empty:
+        return float(price_min)
+
+    w = buyers["net_ets"].to_numpy()
+    p = buyers["p_bid"].to_numpy()
+    denom = float(np.sum(w))
+    if denom <= 0:
+        return float(price_min)
+
+    acc = float(np.sum(w * p) / denom)
+    return float(np.clip(acc, price_min, price_max))
+
+
 def ets_hesapla(
     df: pd.DataFrame,
     price_min: float,
@@ -132,7 +154,8 @@ def ets_hesapla(
     slope_bid: float = 150,
     slope_ask: float = 150,
     spread: float = 0.0,
-    benchmark_top_pct: int = 100,  # ✅ yeni
+    benchmark_top_pct: int = 100,
+    price_method: str = "Market Clearing",  # ✅ yeni
 ):
     """
     AGK yönü:
@@ -142,9 +165,13 @@ def ets_hesapla(
     Formül:
       T_i = I_i + AGK * (B_fuel - I_i)
 
-    Benchmark seçimi (yakıt bazında):
+    Benchmark:
       benchmark_top_pct=10 => en iyi %10 üretim dilimi
-      benchmark_top_pct=100 => tüm tesisler (eski davranış)
+      benchmark_top_pct=100 => tüm tesisler
+
+    Price method:
+      - "Market Clearing"
+      - "Average Compliance Cost"
     """
     required = ["Plant", "FuelType", "Emissions_tCO2", "Generation_MWh"]
     for c in required:
@@ -161,11 +188,11 @@ def ets_hesapla(
     # 1) Gerçek yoğunluk
     x["intensity"] = x["Emissions_tCO2"] / x["Generation_MWh"]
 
-    # 2) Benchmark (yakıt bazında, seçime göre)
+    # 2) Benchmark (yakıt bazında)
     benchmark_map = _compute_benchmarks(x, benchmark_top_pct=int(benchmark_top_pct))
     x["B_fuel"] = x["FuelType"].map(benchmark_map)
 
-    # 3) Tahsis yoğunluğu
+    # 3) Tahsis yoğunluğu (AGK)
     x["tahsis_intensity"] = x["intensity"] + float(agk) * (x["B_fuel"] - x["intensity"])
 
     # 4) Ücretsiz tahsis
@@ -177,8 +204,11 @@ def ets_hesapla(
     # 6) BID/ASK
     x = _build_bid_ask(x, price_min, price_max, slope_bid, slope_ask, spread)
 
-    # 7) Clearing price
-    clearing_price = _market_clearing_price(x, price_min, price_max, step=1.0)
+    # 7) Price
+    if price_method == "Average Compliance Cost":
+        clearing_price = _average_compliance_cost_price(x, price_min, price_max)
+    else:
+        clearing_price = _market_clearing_price(x, price_min, price_max, step=1.0)
 
     # 8) Maliyet / gelir
     x["carbon_price"] = clearing_price
