@@ -3,11 +3,78 @@ import pandas as pd
 import numpy as np
 from io import BytesIO
 
+import matplotlib.pyplot as plt
+
 from openpyxl.chart import LineChart, BarChart, Reference
 from openpyxl.chart.label import DataLabelList
 
 from ets_model import ets_hesapla
-from data_cleaning import clean_ets_input, filter_intensity_outliers_by_fuel
+
+# -------------------------
+# data_cleaning import (opsiyonel, yoksa app düşmesin)
+# -------------------------
+try:
+    from data_cleaning import clean_ets_input, filter_intensity_outliers_by_fuel
+    HAS_CLEANING = True
+except Exception:
+    HAS_CLEANING = False
+
+    def clean_ets_input(df: pd.DataFrame):
+        """Fallback: minimum temizlik + kolon standardizasyonu."""
+        df = df.copy()
+
+        # Bazı olası kolon isimlerini normalize et
+        rename_map = {}
+        if "Emissions" in df.columns and "Emissions_tCO2" not in df.columns:
+            rename_map["Emissions"] = "Emissions_tCO2"
+        if "Generation" in df.columns and "Generation_MWh" not in df.columns:
+            rename_map["Generation"] = "Generation_MWh"
+        if rename_map:
+            df = df.rename(columns=rename_map)
+
+        # Zorunlu kolonlar
+        required = ["Plant", "Generation_MWh", "Emissions_tCO2", "FuelType"]
+        for c in required:
+            if c not in df.columns:
+                raise ValueError(f"Excel kolon eksik: {c}")
+
+        # Tip dönüşümü
+        df["Generation_MWh"] = pd.to_numeric(df["Generation_MWh"], errors="coerce")
+        df["Emissions_tCO2"] = pd.to_numeric(df["Emissions_tCO2"], errors="coerce")
+
+        # Null/0 temizliği
+        df = df.dropna(subset=["Plant", "FuelType", "Generation_MWh", "Emissions_tCO2"])
+        df = df[df["Generation_MWh"] > 0]
+        df = df[df["Emissions_tCO2"] >= 0]
+
+        return df
+
+    def filter_intensity_outliers_by_fuel(df: pd.DataFrame, lower_pct: float, upper_pct: float):
+        """
+        Fallback: Yakıt bazında benchmark'a göre intensity bandı dışını at.
+        Band:
+          lo = (1 - L) * B
+          hi = (1 + U) * B
+        """
+        df = df.copy()
+        df["intensity"] = df["Emissions_tCO2"] / df["Generation_MWh"]
+
+        removed = []
+        kept = []
+
+        for ft, part in df.groupby("FuelType", dropna=False):
+            B = part["Emissions_tCO2"].sum() / part["Generation_MWh"].sum()
+            lo = (1.0 - lower_pct) * B
+            hi = (1.0 + upper_pct) * B
+
+            mask = (part["intensity"] >= lo) & (part["intensity"] <= hi)
+            kept.append(part[mask].copy())
+            removed.append(part[~mask].copy())
+
+        kept_df = pd.concat(kept, ignore_index=True) if kept else df.iloc[0:0].copy()
+        removed_df = pd.concat(removed, ignore_index=True) if removed else df.iloc[0:0].copy()
+
+        return kept_df, removed_df
 
 
 # -------------------------
@@ -27,57 +94,36 @@ DEFAULTS = {
 }
 
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
-
 st.title("ETS Geliştirme Modülü V001")
 
 # -------------------------
-# Model açıklaması (tek blok - düzeltilmiş)
+# Açıklama (tek blok, düzgün)
 # -------------------------
-with st.expander("📌 Model Açıklaması / Sliderlar neyi değiştiriyor?", expanded=True):
-    st.markdown(
-        """
+st.write(
+    """
 ### ETS Geliştirme Modülü – Model Açıklaması
 
-Bu arayüz, elektrik üretim sektörüne yönelik **tesis bazlı** ve **piyasa tutarlı** bir **ETS (Emisyon Ticaret Sistemi)** simülasyonu oluşturur.
+Bu arayüz, elektrik üretim sektörüne yönelik **tesis bazlı** bir ETS (Emisyon Ticaret Sistemi) simülasyonu çalıştırır ve sonuçları **Excel raporu + grafikler** olarak indirmenizi sağlar.
 
-**Veri girişi**
-- Excel’deki **tüm sekmeleri** okur ve birleştirir (**FuelType = sekme adı**).
-- Beklenen kolonlar: `Plant`, `Generation_MWh`, `Emissions_tCO2`
+**Model akışı**
+1) Excel’deki tüm sekmeler okunur ve birleştirilir (**FuelType = sekme adı**)  
+2) Yakıt bazında benchmark hesaplanır (**Benchmark Top %** ile “en iyi dilim” seçilebilir)  
+3) **AGK** ile tahsis yoğunluğu hesaplanır: **Tᵢ = Iᵢ + AGK×(B − Iᵢ)**  
+4) Ücretsiz tahsis → net ETS pozisyonu (alıcı/satıcı) bulunur  
+5) Tüm tesisler tek piyasada toplanır ve **tek bir karbon fiyatı** üretilir  
+6) Maliyet/gelir/net nakit akışı hesaplanır  
+7) Çıktılar Excel/CSV olarak indirilir
 
-**Benchmark (yakıt bazlı)**
-- Yakıt türü içinde üretim ağırlıklı benchmark hesaplanır.
-- **Benchmark Top %**: Yakıt içindeki “en düşük intensity” dilimini seçer:
-  - 100% = tüm tesisler (varsayılan)
-  - 10% / 20% = en temiz dilim (daha sıkı benchmark)
+**Fiyat yöntemi (tek seçim)**
+- **Market Clearing:** Toplam arz-talep eğrilerinin kesiştiği fiyat (AB ETS mantığına en yakın)  
+- **Average Compliance Cost (ACC):** Sadece alıcıların (NetETS>0) ödeme isteğine dayalı ağırlıklı ortalama fiyat (band içinde kırpılır)
 
-**AGK (Adil Geçiş Katsayısı)**
-- Tahsis yoğunluğu formülü:
-  - **Tᵢ = Iᵢ + AGK × (B_fuel − Iᵢ)**
-- AGK=1 → Benchmark’a tam yaklaşır (varsayılan)
-- AGK=0 → Tesis kendi yoğunluğunda kalır
-
-**Karbon fiyatı (tek piyasa)**
-- Tüm tesisler tek piyasada birleşir ve **tek karbon fiyatı** oluşur.
-- **Price Method**
-  - Market Clearing: arz-talep kesişimi
-  - ACC: alıcıların p_bid değerlerinin (net yükümlülükle ağırlıklı) ortalaması
-- **Carbon Price Range (min–max)**: fiyat bu aralıkta kalır.
-
-**Market Calibration**
-- β_bid: alıcıların fiyat hassasiyeti
-- β_ask: satıcıların fiyat hassasiyeti
-- Spread: BID/ASK ayrışması için ek fark
-
-**Veri Temizleme (opsiyonel)**
-- Cleaning OFF ise sadece temel temizlik yapılır.
-- Cleaning ON ise intensity outlier’lar benchmark bandına göre filtrelenir:
-  - lo = B × (1 − L)
-  - hi = B × (1 + U)
-
-**Çıktılar**
-- Sonuç tabloları + Excel rapor (çok sayfalı) + grafikler (Supply–Demand ve Top-20 cashflow)
+**Varsayılan (Default)**
+- Price range: **(5, 20)**, AGK: **1.00**, Benchmark Top %: **100**
+- β_bid: **150**, β_ask: **150**, Spread: **1**
+- Cleaning: **OFF**, L: **1.0**, U: **2.0**
 """
-    )
+)
 
 # -------------------------
 # Sidebar: Reset
@@ -118,9 +164,9 @@ agk = st.sidebar.slider(
     value=float(st.session_state.get("agk", DEFAULTS["agk"])),
     step=0.05,
     key="agk",
-    help="AGK=1→Benchmark, AGK=0→Tesis yoğunluğu. Tᵢ = Iᵢ + AGK×(B − Iᵢ)",
+    help="AGK yönü: AGK=1→Benchmark, AGK=0→Tesis yoğunluğu (Tᵢ = Iᵢ + AGK×(B − Iᵢ))",
 )
-st.sidebar.caption("Default: AGK = 1.00")
+st.sidebar.caption("Default: 1.00")
 
 st.sidebar.subheader("Benchmark Settings")
 benchmark_top_pct = st.sidebar.select_slider(
@@ -128,7 +174,7 @@ benchmark_top_pct = st.sidebar.select_slider(
     options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
     value=int(st.session_state.get("benchmark_top_pct", DEFAULTS["benchmark_top_pct"])),
     key="benchmark_top_pct",
-    help="Yakıt bazında benchmark, intensity düşük olan en iyi dilimden hesaplanır. 100=tüm tesisler.",
+    help="Yakıt bazında benchmark, intensity düşük olan en iyi dilimden hesaplanır. 100 = tüm tesisler.",
 )
 st.sidebar.caption("Default: 100")
 
@@ -143,12 +189,11 @@ price_method = st.sidebar.selectbox(
     options=_methods,
     index=_methods.index(_default_method),
     key="price_method",
-    help="Market Clearing: arz-talep kesişimi. ACC: alıcıların p_bid (net_ets ile ağırlıklı) ortalaması.",
+    help="Market Clearing: arz-talep kesişimi. ACC: alıcıların p_bid değerlerinin (NetETS ile ağırlıklı) ortalaması.",
 )
 st.sidebar.caption("Default: Market Clearing")
 
 st.sidebar.subheader("Market Calibration")
-
 slope_bid = st.sidebar.slider(
     "Bid Slope (β_bid)",
     min_value=10,
@@ -192,10 +237,10 @@ st.sidebar.caption("Sekme adı FuelType olarak alınır.")
 st.sidebar.subheader("Data Cleaning")
 
 do_clean = st.sidebar.toggle(
-    "Apply cleaning rules?",
+    "Apply outlier filter (optional)?",
     value=bool(st.session_state.get("do_clean", DEFAULTS["do_clean"])),
     key="do_clean",
-    help="Kapalıysa (Hayır), outlier filtresi uygulanmaz.",
+    help="OFF ise outlier filtresi uygulanmaz. (Temel temizlik yine de uygulanır.)",
 )
 st.sidebar.caption("Default: OFF")
 
@@ -221,11 +266,13 @@ upper_pct = st.sidebar.slider(
 )
 st.sidebar.caption("Default: 2.0")
 
+if not HAS_CLEANING:
+    st.sidebar.warning("data_cleaning.py bulunamadı: fallback temizlik kullanılıyor.")
+
 # -------------------------
 # Excel upload
 # -------------------------
 uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
-
 
 def read_all_sheets(file) -> pd.DataFrame:
     xls = pd.ExcelFile(file)
@@ -236,28 +283,33 @@ def read_all_sheets(file) -> pd.DataFrame:
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
 
-
-def build_market_curve(sonuc_df: pd.DataFrame, price_min: int, price_max: int, step: int = 1) -> pd.DataFrame:
-    prices = np.arange(price_min, price_max + step, step)
+def build_market_curve(sonuc_df: pd.DataFrame, pmin: int, pmax: int, step: int = 1) -> pd.DataFrame:
+    """
+    Aynı lineer BID/ASK mantığıyla her fiyat seviyesinde toplam arz ve talebi üretir.
+    Streamlit + Excel grafiği için kullanılır.
+    """
+    prices = np.arange(pmin, pmax + step, step)
 
     buyers = sonuc_df[sonuc_df["net_ets"] > 0][["net_ets", "p_bid"]].copy()
     sellers = sonuc_df[sonuc_df["net_ets"] < 0][["net_ets", "p_ask"]].copy()
 
     rows = []
     for p in prices:
+        # Demand
         if not buyers.empty:
             q0 = buyers["net_ets"].to_numpy()
             p_bid_arr = buyers["p_bid"].to_numpy()
-            denom = np.maximum(p_bid_arr - price_min, 1e-6)
-            frac = 1.0 - (p - price_min) / denom
+            denom = np.maximum(p_bid_arr - pmin, 1e-6)
+            frac = 1.0 - (p - pmin) / denom
             demand = float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
         else:
             demand = 0.0
 
+        # Supply
         if not sellers.empty:
             q0 = (-sellers["net_ets"]).to_numpy()
             p_ask_arr = sellers["p_ask"].to_numpy()
-            denom = np.maximum(price_max - p_ask_arr, 1e-6)
+            denom = np.maximum(pmax - p_ask_arr, 1e-6)
             frac = (p - p_ask_arr) / denom
             supply = float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
         else:
@@ -266,7 +318,6 @@ def build_market_curve(sonuc_df: pd.DataFrame, price_min: int, price_max: int, s
         rows.append({"Price": float(p), "Total_Demand": demand, "Total_Supply": supply})
 
     return pd.DataFrame(rows)
-
 
 if uploaded is None:
     st.info("Lütfen bir Excel yükleyin.")
@@ -315,7 +366,7 @@ if do_clean:
         with st.expander("Çıkarılan outlier satırlar (önizleme)"):
             st.dataframe(removed_df.head(200), use_container_width=True)
 else:
-    st.warning("Temizleme kapalı: (sadece temel temizlik yapıldı)")
+    st.warning("Temizleme kapalı: ham veri (temel temizlik sonrası) ile devam ediliyor.")
 
 st.subheader("Modelde kullanılacak veri (ilk 50 satır)")
 st.dataframe(df_all.head(50), use_container_width=True)
@@ -338,8 +389,9 @@ if st.button("Run ETS Model"):
         )
 
         st.success(f"Carbon Price ({price_method}): {clearing_price:.2f} €/tCO₂")
-        st.caption(f"Benchmark method: Best {benchmark_top_pct}% (production-share, by lowest intensity)")
+        st.caption(f"Benchmark: Best {benchmark_top_pct}% (by lowest intensity, fuel-based)")
 
+        # Benchmark table
         st.subheader("Benchmark (yakıt bazında)")
         bench_df = (
             pd.DataFrame([{"FuelType": k, "Benchmark_B_fuel": v} for k, v in benchmark_map.items()])
@@ -348,6 +400,7 @@ if st.button("Run ETS Model"):
         )
         st.dataframe(bench_df, use_container_width=True)
 
+        # KPIs
         total_cost = float(sonuc_df["ets_cost_total_€"].sum())
         total_revenue = float(sonuc_df["ets_revenue_total_€"].sum())
         net_cashflow = float(sonuc_df["ets_net_cashflow_€"].sum())
@@ -357,6 +410,7 @@ if st.button("Run ETS Model"):
         c2.metric("Toplam ETS Geliri (€)", f"{total_revenue:,.0f}")
         c3.metric("Net Nakit Akışı (€)", f"{net_cashflow:,.0f}")
 
+        # Buyers / Sellers
         st.subheader("ETS Sonuçları – Alıcılar (Net ETS > 0)")
         buyers_df = sonuc_df[sonuc_df["net_ets"] > 0].copy()
         st.dataframe(
@@ -396,61 +450,8 @@ if st.button("Run ETS Model"):
         st.subheader("Tüm Sonuçlar (ham tablo)")
         st.dataframe(sonuc_df, use_container_width=True)
 
+        # Curve + Top20
         curve_df = build_market_curve(sonuc_df, price_min, price_max, step=1)
-import matplotlib.pyplot as plt
-
-st.subheader("ETS Market – Supply & Demand (Merit Order)")
-
-fig, ax = plt.subplots(figsize=(10, 6))
-
-# Supply (artan)
-supply_df = (
-    sonuc_df[sonuc_df["net_ets"] < 0]
-    .assign(volume=lambda d: -d["net_ets"])
-    .sort_values("p_ask")
-)
-supply_df["cum_volume"] = supply_df["volume"].cumsum()
-
-ax.step(
-    supply_df["cum_volume"],
-    supply_df["p_ask"],
-    where="post",
-    label="Supply (Allowances)",
-    linewidth=2,
-)
-
-# Demand (azalan)
-demand_df = (
-    sonuc_df[sonuc_df["net_ets"] > 0]
-    .assign(volume=lambda d: d["net_ets"])
-    .sort_values("p_bid", ascending=False)
-)
-demand_df["cum_volume"] = demand_df["volume"].cumsum()
-
-ax.step(
-    demand_df["cum_volume"],
-    demand_df["p_bid"],
-    where="post",
-    label="Demand (Compliance)",
-    linewidth=2,
-)
-
-# Clearing price
-ax.axhline(
-    clearing_price,
-    color="red",
-    linestyle="--",
-    linewidth=2,
-    label=f"Clearing Price = {clearing_price:.1f} €/tCO₂",
-)
-
-ax.set_xlabel("Cumulative Emissions (tCO₂)")
-ax.set_ylabel("Carbon Price (€/tCO₂)")
-ax.set_title("ETS Market Clearing – Supply & Demand Curves")
-ax.legend()
-ax.grid(True, alpha=0.3)
-
-st.pyplot(fig)
 
         cashflow_top20 = (
             sonuc_df[["Plant", "FuelType", "ets_net_cashflow_€"]]
@@ -459,6 +460,33 @@ st.pyplot(fig)
             .head(20)
         )
 
+        # -------------------------
+        # ✅ Streamlit grafikler (daha düzgün)
+        # -------------------------
+        st.subheader("Grafikler")
+
+        # Supply–Demand (daha “ETS-like” görünüm: step)
+        fig1 = plt.figure()
+        plt.step(curve_df["Price"], curve_df["Total_Demand"], where="post", label="Total Demand (BID)")
+        plt.step(curve_df["Price"], curve_df["Total_Supply"], where="post", label="Total Supply (ASK)")
+        plt.axvline(float(clearing_price), linestyle="--", label=f"Carbon Price = {clearing_price:.2f}")
+        plt.xlabel("Price (€/tCO₂)")
+        plt.ylabel("Volume (tCO₂)")
+        plt.title("Market Supply–Demand (Step Curves)")
+        plt.legend()
+        st.pyplot(fig1, clear_figure=True)
+
+        # Top20 cashflow bar
+        fig2 = plt.figure()
+        plt.bar(cashflow_top20["Plant"].astype(str), cashflow_top20["ets_net_cashflow_€"])
+        plt.xticks(rotation=75, ha="right")
+        plt.ylabel("€")
+        plt.title("Top 20 Plants – ETS Net Cashflow (€)")
+        st.pyplot(fig2, clear_figure=True)
+
+        # -------------------------
+        # Excel report + charts
+        # -------------------------
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             summary_df = pd.DataFrame(
@@ -511,11 +539,13 @@ st.pyplot(fig)
             sellers_df.to_excel(writer, sheet_name="Sellers", index=False)
             curve_df.to_excel(writer, sheet_name="Market_Curve", index=False)
             cashflow_top20.to_excel(writer, sheet_name="Cashflow_Top20", index=False)
+
             if not removed_df.empty:
                 removed_df.to_excel(writer, sheet_name="Removed_Outliers", index=False)
 
             wb = writer.book
 
+            # Excel Supply–Demand (LineChart)
             ws_curve = wb["Market_Curve"]
             line = LineChart()
             line.title = "Market Supply–Demand Curve"
@@ -539,6 +569,7 @@ st.pyplot(fig)
             )
             ws_curve.add_chart(line, "E2")
 
+            # Excel Cashflow chart
             ws_cf = wb["Cashflow_Top20"]
             bar = BarChart()
             bar.type = "col"
