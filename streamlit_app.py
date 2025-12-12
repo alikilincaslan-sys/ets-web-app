@@ -56,7 +56,8 @@ if st.sidebar.button("🔄 Reset to Default"):
     st.session_state["do_clean"] = DEFAULTS["do_clean"]
     st.session_state["lower_pct"] = DEFAULTS["lower_pct"]
     st.session_state["upper_pct"] = DEFAULTS["upper_pct"]
-    st.experimental_rerun()
+    st.rerun()
+
 
 # -------------------------
 # Sidebar: sliders (session_state bağlı)
