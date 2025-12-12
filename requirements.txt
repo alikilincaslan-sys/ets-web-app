@@ -2,4 +2,5 @@ streamlit
 pandas
 openpyxl
 numpy
-
+matplotlib
+python-docx
