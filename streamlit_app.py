@@ -397,6 +397,60 @@ if st.button("Run ETS Model"):
         st.dataframe(sonuc_df, use_container_width=True)
 
         curve_df = build_market_curve(sonuc_df, price_min, price_max, step=1)
+import matplotlib.pyplot as plt
+
+st.subheader("ETS Market – Supply & Demand (Merit Order)")
+
+fig, ax = plt.subplots(figsize=(10, 6))
+
+# Supply (artan)
+supply_df = (
+    sonuc_df[sonuc_df["net_ets"] < 0]
+    .assign(volume=lambda d: -d["net_ets"])
+    .sort_values("p_ask")
+)
+supply_df["cum_volume"] = supply_df["volume"].cumsum()
+
+ax.step(
+    supply_df["cum_volume"],
+    supply_df["p_ask"],
+    where="post",
+    label="Supply (Allowances)",
+    linewidth=2,
+)
+
+# Demand (azalan)
+demand_df = (
+    sonuc_df[sonuc_df["net_ets"] > 0]
+    .assign(volume=lambda d: d["net_ets"])
+    .sort_values("p_bid", ascending=False)
+)
+demand_df["cum_volume"] = demand_df["volume"].cumsum()
+
+ax.step(
+    demand_df["cum_volume"],
+    demand_df["p_bid"],
+    where="post",
+    label="Demand (Compliance)",
+    linewidth=2,
+)
+
+# Clearing price
+ax.axhline(
+    clearing_price,
+    color="red",
+    linestyle="--",
+    linewidth=2,
+    label=f"Clearing Price = {clearing_price:.1f} €/tCO₂",
+)
+
+ax.set_xlabel("Cumulative Emissions (tCO₂)")
+ax.set_ylabel("Carbon Price (€/tCO₂)")
+ax.set_title("ETS Market Clearing – Supply & Demand Curves")
+ax.legend()
+ax.grid(True, alpha=0.3)
+
+st.pyplot(fig)
 
         cashflow_top20 = (
             sonuc_df[["Plant", "FuelType", "ets_net_cashflow_€"]]
