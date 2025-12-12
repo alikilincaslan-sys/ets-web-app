@@ -10,6 +10,22 @@ from ets_model import ets_hesapla
 from data_cleaning import clean_ets_input, filter_intensity_outliers_by_fuel
 
 
+# -------------------------
+# Default values (V001 Stable)
+# -------------------------
+DEFAULTS = {
+    "price_range": (5, 20),
+    "agk": 1.00,
+    "benchmark_top_pct": 100,
+    "slope_bid": 150,
+    "slope_ask": 150,
+    "spread": 1.0,
+    "do_clean": False,
+    "lower_pct": 1.0,
+    "upper_pct": 2.0,
+}
+
+
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
 st.title("ETS Geliştirme Modülü V001")
@@ -20,48 +36,62 @@ Bu arayüz:
 - Yakıt türüne göre benchmark hesaplar,
 - AGK ile tahsis yoğunluğunu belirler,
 - Tüm tesisleri tek piyasada birleştirip **BID/ASK** eğrileriyle **clearing price** üretir,
+- (Opsiyonel) veri temizleme uygular,
 - Sonuçları **Excel rapor + grafik** olarak indirir.
 """
 )
 
 # -------------------------
-# Sidebar: Parametreler
+# Sidebar: Reset
 # -------------------------
 st.sidebar.header("Model Parameters")
 
+if st.sidebar.button("🔄 Reset to Default"):
+    st.session_state["price_range"] = DEFAULTS["price_range"]
+    st.session_state["agk"] = DEFAULTS["agk"]
+    st.session_state["benchmark_top_pct"] = DEFAULTS["benchmark_top_pct"]
+    st.session_state["slope_bid"] = DEFAULTS["slope_bid"]
+    st.session_state["slope_ask"] = DEFAULTS["slope_ask"]
+    st.session_state["spread"] = DEFAULTS["spread"]
+    st.session_state["do_clean"] = DEFAULTS["do_clean"]
+    st.session_state["lower_pct"] = DEFAULTS["lower_pct"]
+    st.session_state["upper_pct"] = DEFAULTS["upper_pct"]
+    st.experimental_rerun()
+
+# -------------------------
+# Sidebar: sliders (session_state bağlı)
+# -------------------------
 price_min, price_max = st.sidebar.slider(
     "Carbon Price Range (€/tCO₂)",
     min_value=0,
     max_value=200,
-    value=(0, 20),
+    value=st.session_state.get("price_range", DEFAULTS["price_range"]),
     step=1,
+    key="price_range",
     help="Clearing price bu aralık içinde bulunur.",
 )
+st.sidebar.caption("Default: (5, 20)")
 
 agk = st.sidebar.slider(
     "Just Transition Coefficient (AGK)",
     min_value=0.0,
     max_value=1.0,
-    value=0.50,
+    value=float(st.session_state.get("agk", DEFAULTS["agk"])),
     step=0.05,
+    key="agk",
     help="AGK yönü: AGK=1→Benchmark, AGK=0→Tesis yoğunluğu (T_i = I + AGK*(B - I))",
 )
-st.sidebar.caption(
-    "Default (önerilen): AGK = 1.0 → Tam benchmark yaklaşımı (AB ETS benzeri)."
-)
+st.sidebar.caption("Default: AGK = 1.00")
 
-# ✅ Benchmark seçimi
 st.sidebar.subheader("Benchmark Settings")
-
 benchmark_top_pct = st.sidebar.select_slider(
     "Benchmark = Best plants (by intensity) %",
     options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-    value=100,
+    value=int(st.session_state.get("benchmark_top_pct", DEFAULTS["benchmark_top_pct"])),
+    key="benchmark_top_pct",
     help="Yakıt bazında benchmark, intensity düşük olan en iyi dilimden (production-share) hesaplanır. 100 = tüm tesisler.",
 )
-st.sidebar.caption(
-    "Default (önerilen): %100 → Tüm tesisler kullanılır (mevcut ulusal uygulamalara en yakın)."
-)
+st.sidebar.caption("Default: 100")
 
 st.sidebar.subheader("Market Calibration")
 
@@ -69,28 +99,34 @@ slope_bid = st.sidebar.slider(
     "Bid Slope (β_bid)",
     min_value=10,
     max_value=500,
-    value=150,
+    value=int(st.session_state.get("slope_bid", DEFAULTS["slope_bid"])),
     step=10,
+    key="slope_bid",
     help="Alıcıların (kirli tesis) ödeme isteği hassasiyeti.",
 )
+st.sidebar.caption("Default: 150")
 
 slope_ask = st.sidebar.slider(
     "Ask Slope (β_ask)",
     min_value=10,
     max_value=500,
-    value=150,
+    value=int(st.session_state.get("slope_ask", DEFAULTS["slope_ask"])),
     step=10,
+    key="slope_ask",
     help="Satıcıların (temiz tesis) satış isteği hassasiyeti.",
 )
+st.sidebar.caption("Default: 150")
 
 spread = st.sidebar.slider(
     "Bid/Ask Spread (€/tCO₂)",
     min_value=0.0,
     max_value=10.0,
-    value=0.0,
+    value=float(st.session_state.get("spread", DEFAULTS["spread"])),
     step=0.5,
+    key="spread",
     help="0 bırakabilirsin. Spread eklemek bid/ask aynı görünmesini azaltır.",
 )
+st.sidebar.caption("Default: 1.0")
 
 st.sidebar.divider()
 st.sidebar.caption("Excel'de beklenen kolonlar: Plant, Generation_MWh, Emissions_tCO2")
@@ -103,30 +139,37 @@ st.sidebar.subheader("Data Cleaning")
 
 do_clean = st.sidebar.toggle(
     "Apply cleaning rules?",
-    value=True,
-    help="Kapalıysa (Hayır), veri temizleme/outlier filtresi uygulanmaz."
+    value=bool(st.session_state.get("do_clean", DEFAULTS["do_clean"])),
+    key="do_clean",
+    help="Kapalıysa (Hayır), veri temizleme/outlier filtresi uygulanmaz.",
 )
+st.sidebar.caption("Default: OFF")
 
 lower_pct = st.sidebar.slider(
     "Lower bound vs Benchmark (L)",
     min_value=0.0,
     max_value=1.0,
-    value=1.0,
+    value=float(st.session_state.get("lower_pct", DEFAULTS["lower_pct"])),
     step=0.05,
-    help="lo = B*(1-L). L=1.0 => lo=0. L=0.5 => lo=0.5B."
+    key="lower_pct",
+    help="lo = B*(1-L). L=1.0 => lo=0. L=0.5 => lo=0.5B.",
 )
+st.sidebar.caption("Default: 1.0")
 
 upper_pct = st.sidebar.slider(
     "Upper bound vs Benchmark (U)",
     min_value=0.0,
     max_value=2.0,
-    value=1.0,
+    value=float(st.session_state.get("upper_pct", DEFAULTS["upper_pct"])),
     step=0.05,
-    help="hi = B*(1+U). U=1.0 => hi=2B. U=0.5 => hi=1.5B. U=2.0 => hi=3B."
+    key="upper_pct",
+    help="hi = B*(1+U). U=1.0 => hi=2B. U=2.0 => hi=3B.",
 )
+st.sidebar.caption("Default: 2.0")
+
 
 # -------------------------
-# Excel yükleme
+# Excel upload
 # -------------------------
 uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
 
@@ -188,7 +231,7 @@ st.subheader("Yüklenen veri (ham / birleştirilmiş)")
 st.dataframe(df_all_raw.head(50), use_container_width=True)
 
 # -------------------------
-# Temizleme aşaması (opsiyonel)
+# Cleaning (basic always + optional outlier)
 # -------------------------
 st.subheader("Veri Temizleme (opsiyonel)")
 
@@ -227,7 +270,7 @@ st.subheader("Modelde kullanılacak veri (ilk 50 satır)")
 st.dataframe(df_all.head(50), use_container_width=True)
 
 # -------------------------
-# Model çalıştır
+# Run model
 # -------------------------
 if st.button("Run ETS Model"):
     try:
@@ -239,25 +282,22 @@ if st.button("Run ETS Model"):
             slope_bid=slope_bid,
             slope_ask=slope_ask,
             spread=spread,
-            benchmark_top_pct=int(benchmark_top_pct),   # ✅ yeni parametre
+            benchmark_top_pct=int(benchmark_top_pct),
         )
 
         st.success(f"Clearing Price: {clearing_price:.2f} €/tCO₂")
-
         st.caption(f"Benchmark method: Best {benchmark_top_pct}% (production-share, by lowest intensity)")
 
-        # Benchmark tablosu
+        # Benchmark table
         st.subheader("Benchmark (yakıt bazında)")
         bench_df = (
-            pd.DataFrame(
-                [{"FuelType": k, "Benchmark_B_fuel": v} for k, v in benchmark_map.items()]
-            )
+            pd.DataFrame([{"FuelType": k, "Benchmark_B_fuel": v} for k, v in benchmark_map.items()])
             .sort_values("FuelType")
             .reset_index(drop=True)
         )
         st.dataframe(bench_df, use_container_width=True)
 
-        # KPI özetleri
+        # KPIs
         total_cost = float(sonuc_df["ets_cost_total_€"].sum())
         total_revenue = float(sonuc_df["ets_revenue_total_€"].sum())
         net_cashflow = float(sonuc_df["ets_net_cashflow_€"].sum())
@@ -267,7 +307,7 @@ if st.button("Run ETS Model"):
         c2.metric("Toplam ETS Geliri (€)", f"{total_revenue:,.0f}")
         c3.metric("Net Nakit Akışı (€)", f"{net_cashflow:,.0f}")
 
-        # Alıcılar / Satıcılar
+        # Buyers / Sellers
         st.subheader("ETS Sonuçları – Alıcılar (Net ETS > 0)")
         buyers_df = sonuc_df[sonuc_df["net_ets"] > 0].copy()
         st.dataframe(
@@ -304,14 +344,11 @@ if st.button("Run ETS Model"):
             use_container_width=True,
         )
 
-        # Ham sonuçlar
         st.subheader("Tüm Sonuçlar (ham tablo)")
         st.dataframe(sonuc_df, use_container_width=True)
 
-        # Market curve verisi (grafik için)
         curve_df = build_market_curve(sonuc_df, price_min, price_max, step=1)
 
-        # Cashflow top 20 (grafik için)
         cashflow_top20 = (
             sonuc_df[["Plant", "FuelType", "ets_net_cashflow_€"]]
             .copy()
@@ -320,11 +357,10 @@ if st.button("Run ETS Model"):
         )
 
         # -------------------------
-        # EXCEL RAPOR OLUŞTUR + GRAFİK EKLE
+        # Excel report + charts
         # -------------------------
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            # Summary
             summary_df = pd.DataFrame(
                 {
                     "Metric": [
@@ -379,7 +415,6 @@ if st.button("Run ETS Model"):
 
             wb = writer.book
 
-            # 1) Supply–Demand Line Chart
             ws_curve = wb["Market_Curve"]
             line = LineChart()
             line.title = "Market Supply–Demand Curve"
@@ -404,7 +439,6 @@ if st.button("Run ETS Model"):
 
             ws_curve.add_chart(line, "E2")
 
-            # 2) Cashflow Bar Chart
             ws_cf = wb["Cashflow_Top20"]
             bar = BarChart()
             bar.type = "col"
