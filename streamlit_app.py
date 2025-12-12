@@ -31,7 +31,128 @@ st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
 st.title("ETS Geliştirme Modülü V001")
 
-st.write(
+    st.write(
+    """
+### ETS Geliştirme Modülü – Model Açıklaması
+
+Bu arayüz, elektrik üretim sektörüne yönelik **tesis bazlı ve piyasa tutarlı**
+bir **Emisyon Ticaret Sistemi (ETS)** simülasyonu oluşturmak için tasarlanmıştır.
+
+---
+
+## 📥 Veri Girişi
+- Excel dosyasındaki **tüm sekmeleri** otomatik olarak okur ve birleştirir.
+- Her sekme adı **FuelType (yakıt türü)** olarak modele eklenir.
+- Beklenen temel kolonlar:
+  - `Plant`
+  - `Generation_MWh`
+  - `Emissions_tCO2`
+
+---
+
+## 📊 Benchmark Hesaplama (Yakıt Bazlı)
+- Her yakıt türü için **üretim ağırlıklı emisyon benchmarkı** hesaplanır.
+- Benchmark, seçilen **“Top % Benchmark”** ayarına göre belirlenir:
+  - **%100 (varsayılan)** → tüm tesisler dahil
+  - **%20** → en temiz %20’lik üretim dilimi
+  - **%10** → yalnızca en verimli tesisler
+- Bu mekanizma, **yakıt içi verimliliği** ön plana çıkarır.
+
+---
+
+## ⚖️ Adil Geçiş Katsayısı (AGK)
+- AGK, ücretsiz tahsis yoğunluğunu **tesis yoğunluğu ile benchmark arasında**
+yumuşatır.
+
+Formül:
+> **Tᵢ = Iᵢ + AGK × (B_fuel − Iᵢ)**
+
+- **AGK = 1.00 (varsayılan)**  
+  → Tesis tamamen yakıt benchmarkına yaklaşır  
+- **AGK = 0.00**  
+  → Tesis kendi emisyon yoğunluğunda kalır  
+- Bu yapı, **adil geçiş** ve **kademeli uyum** senaryolarını temsil eder.
+
+---
+
+## 🧹 Veri Temizleme (Opsiyonel)
+- Veri temizleme **açılıp kapatılabilir**.
+- Yakıt bazında aşırı düşük veya aşırı yüksek emisyon yoğunlukları filtrelenir.
+- Filtre bandı benchmark’a göre belirlenir:
+  - Alt sınır: `(1 − L) × Benchmark`
+  - Üst sınır: `(1 + U) × Benchmark`
+- Temizleme **kapalıysa**, ham veriyle model çalışır.
+
+---
+
+## 💱 ETS Piyasa Modellemesi
+- Tüm tesisler **tek bir birleşik ETS piyasasına** dahil edilir.
+- Her tesis için:
+  - **Net ETS pozisyonu** hesaplanır
+    - Pozitif → alıcı (yükümlü)
+    - Negatif → satıcı (fazla tahsisli)
+- BID (talep) ve ASK (arz) eğrileri tesis bazında oluşturulur.
+- Piyasa kalibrasyonu:
+  - **β_bid** → alıcıların fiyat hassasiyeti
+  - **β_ask** → satıcıların fiyat hassasiyeti
+  - **Spread** → BID/ASK ayrışmasını yumuşatır
+
+---
+
+## 💶 Karbon Fiyatı Hesaplama Yöntemi
+Kullanıcı tek bir seçimle fiyatlama yöntemini belirler:
+
+### 🔹 Market Clearing (Varsayılan)
+- Arz (ASK) ve talep (BID) eğrilerinin **kesiştiği fiyat**
+- **AB ETS mantığına en yakın yöntem**
+- Piyasa temelli, dinamik ve rekabetçi
+
+### 🔹 Average Compliance Cost (ACC)
+- Sadece **yükümlü tesislerin (Net ETS > 0)** ödeme isteğine göre hesaplanır
+- Ağırlıklı ortalama maliyet yaklaşımı
+- Geçiş dönemi, politika senaryoları ve regülasyon analizleri için uygundur
+
+---
+
+## 📈 Sonuçlar
+- Santral bazında:
+  - ETS maliyeti veya geliri
+  - Net nakit akışı
+  - MWh başına etkiler
+- Sistem genelinde:
+  - Clearing price
+  - Toplam ETS maliyeti
+  - Toplam ETS geliri
+  - Net sistem nakit dengesi
+
+---
+
+## 📤 Çıktılar
+- Tüm sonuçlar:
+  - **Excel raporu** (çok sayfalı)
+  - Otomatik eklenen grafikler:
+    - Arz–Talep (Supply–Demand) eğrisi
+    - En yüksek nakit akışına sahip tesisler
+- İsteğe bağlı olarak:
+  - Temizlenmiş veri seti
+  - CSV çıktı
+
+---
+
+## 🎯 Varsayılan (Default) Senaryo Ayarları
+- Carbon Price Range: **5 – 20 €/tCO₂**
+- AGK: **1.00**
+- Benchmark Top %: **100**
+- β_bid: **150**
+- β_ask: **150**
+- Spread: **1**
+- Veri Temizleme: **Kapalı**
+
+Bu yapı, modeli hem **akademik analiz**, hem **politika tasarımı**,  
+hem de **sektörel ETS simülasyonu** için kullanıma hazır hale getirir.
+"""
+)
+
     """
 ### ETS Geliştirme Modülü V001 — Ne yapar?
 
