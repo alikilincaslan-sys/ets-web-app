@@ -46,6 +46,9 @@ agk = st.sidebar.slider(
     step=0.05,
     help="AGK yönü: AGK=1→Benchmark, AGK=0→Tesis yoğunluğu (T_i = I + AGK*(B - I))",
 )
+st.sidebar.caption(
+    "Default (önerilen): AGK = 1.0 → Tam benchmark yaklaşımı (AB ETS benzeri)."
+)
 
 # ✅ Benchmark seçimi
 st.sidebar.subheader("Benchmark Settings")
@@ -55,6 +58,9 @@ benchmark_top_pct = st.sidebar.select_slider(
     options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
     value=100,
     help="Yakıt bazında benchmark, intensity düşük olan en iyi dilimden (production-share) hesaplanır. 100 = tüm tesisler.",
+)
+st.sidebar.caption(
+    "Default (önerilen): %100 → Tüm tesisler kullanılır (mevcut ulusal uygulamalara en yakın)."
 )
 
 st.sidebar.subheader("Market Calibration")
