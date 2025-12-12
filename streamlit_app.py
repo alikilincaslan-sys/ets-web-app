@@ -1,6 +1,12 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+from docx import Document
+from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from datetime import datetime
+
 from io import BytesIO
 
 from openpyxl.chart import LineChart, BarChart, Reference
@@ -24,42 +30,7 @@ DEFAULTS = {
     "do_clean": False,
     "lower_pct": 1.0,
     "upper_pct": 2.0,
-    # Excel-only AGK sensitivity (no UI chart)
-    "agk_list_excel": None,
 }
-
-
-def build_agk_excel_table(sonuc_df: pd.DataFrame, agk_list: list[float]) -> pd.DataFrame:
-    """AGK duyarlılık tablosu (sadece Excel çıktısı için, arayüzde grafik yok).
-
-    Beklenen kolonlar: Plant, FuelType, intensity, B_fuel
-
-    Tahsis yoğunluğu formülü:
-      T_i(alpha) = I_i + alpha * (B_fuel - I_i)
-
-    Çıktı: Plant bazında, seçilen her alpha için ayrı kolon.
-    """
-    if sonuc_df.empty:
-        return pd.DataFrame()
-
-    need = {"Plant", "FuelType", "intensity", "B_fuel"}
-    missing = [c for c in need if c not in sonuc_df.columns]
-    if missing:
-        raise ValueError(f"AGK Excel tablosu için eksik kolon(lar): {missing}")
-
-    base = sonuc_df[["Plant", "FuelType", "intensity", "B_fuel"]].copy()
-
-    # güvenli + tekilleştir
-    base = base.drop_duplicates(subset=["Plant", "FuelType"])
-
-    for a in agk_list:
-        col = f"AGK_{a:.2f}".replace(".", "p")
-        base[col] = base["intensity"] + float(a) * (base["B_fuel"] - base["intensity"])
-
-    # Sıralama: ilk alpha kolonu baz alınır
-    sort_col = f"AGK_{agk_list[0]:.2f}".replace(".", "p")
-    base = base.sort_values(sort_col, ascending=True).reset_index(drop=True)
-    return base
 
 st.set_page_config(page_title="ETS Geliştirme Modülü V001", layout="wide")
 
@@ -157,23 +128,6 @@ agk = st.sidebar.slider(
 )
 st.sidebar.caption("Default: AGK = 1.00")
 
-# Excel-only: AGK senaryo listesi (arayüzde grafik yok, sadece Excel 'AGK_SONUC' sayfasına yazılır)
-agk_excel_options = [round(x, 2) for x in np.arange(0.0, 1.0001, 0.05)]
-default_excel_list = st.session_state.get("agk_list_excel")
-if not default_excel_list:
-    default_excel_list = [float(agk)]
-
-agk_list_excel = st.sidebar.multiselect(
-    "AGK senaryoları (Excel çıktısı)",
-    options=agk_excel_options,
-    default=default_excel_list,
-    key="agk_list_excel",
-    help="Grafik yok. Seçilen AGK değerleri için tahsis yoğunluğu (T_i) Excel'de AGK_SONUC sayfasına yazılır.",
-)
-
-if not agk_list_excel:
-    agk_list_excel = [float(agk)]
-
 st.sidebar.subheader("Benchmark Settings")
 benchmark_top_pct = st.sidebar.select_slider(
     "Benchmark = Best plants (by intensity) %",
@@ -233,6 +187,16 @@ spread = st.sidebar.slider(
     help="Spread eklemek bid/ask aynı görünmesini azaltır.",
 )
 st.sidebar.caption("Default: 1.0")
+
+# FX rate for TL conversion (used in briefing note)
+fx_rate = st.sidebar.number_input(
+    "FX Rate (TL/€)",
+    min_value=0.0,
+    value=float(st.session_state.get("fx_rate", 35.0)),
+    step=0.5,
+    key="fx_rate",
+    help="Bilgi notunda €/MWh değerlerini TL/MWh'ye çevirmek için kullanılır.",
+)
 
 st.sidebar.divider()
 st.sidebar.caption("Excel'de beklenen kolonlar: Plant, Generation_MWh, Emissions_tCO2")
@@ -319,6 +283,253 @@ def build_market_curve(sonuc_df: pd.DataFrame, price_min: int, price_max: int, s
 
     return pd.DataFrame(rows)
 
+
+
+# -------------------------
+# Briefing Note (Word) Helpers
+# -------------------------
+def _safe_float(x, default=0.0):
+    try:
+        if x is None or (isinstance(x, float) and np.isnan(x)):
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def build_tl_mwh_chart_png(sonuc_df: pd.DataFrame, fx_rate: float) -> BytesIO:
+    """Create a simple bar chart (horizontal) for Net ETS impact (TL/MWh) across all plants."""
+    dfc = sonuc_df.copy()
+    # Net cashflow per MWh is the most consistent 'impact' indicator (can be negative for net revenue).
+    if "ets_net_cashflow_€/MWh" not in dfc.columns:
+        # fallback: try to derive from total and generation
+        if "ets_net_cashflow_€" in dfc.columns and "Generation_MWh" in dfc.columns:
+            dfc["ets_net_cashflow_€/MWh"] = dfc["ets_net_cashflow_€"] / dfc["Generation_MWh"].replace(0, np.nan)
+        else:
+            dfc["ets_net_cashflow_€/MWh"] = np.nan
+
+    dfc["ets_net_cashflow_TL/MWh"] = dfc["ets_net_cashflow_€/MWh"] * float(fx_rate)
+
+    # Sort low -> high
+    dfc = dfc.sort_values("ets_net_cashflow_TL/MWh", ascending=True).reset_index(drop=True)
+
+    # Keep labels readable: if too many plants, still plot but increase height
+    n = len(dfc)
+    fig_h = max(6.0, min(40.0, 0.25 * n))
+    fig, ax = plt.subplots(figsize=(11, fig_h))
+    ax.barh(dfc["Plant"], dfc["ets_net_cashflow_TL/MWh"])
+    ax.set_xlabel("Net ETS Etkisi (TL/MWh)")
+    ax.set_ylabel("Santral")
+    ax.set_title("Santral Bazlı Net ETS Etkisi (TL/MWh)\n(Düşükten yükseğe sıralı)")
+    ax.grid(True, axis="x", alpha=0.3)
+
+    buf = BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=200)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def generate_briefing_note_docx(
+    sonuc_df: pd.DataFrame,
+    benchmark_map: dict,
+    clearing_price: float,
+    price_method: str,
+    price_min: float,
+    price_max: float,
+    agk: float,
+    benchmark_top_pct: int,
+    slope_bid: float,
+    slope_ask: float,
+    spread: float,
+    do_clean: bool,
+    lower_pct: float,
+    upper_pct: float,
+    df_all_raw: pd.DataFrame,
+    df_all_used: pd.DataFrame,
+    removed_df: pd.DataFrame,
+    fx_rate: float,
+    soma_example: dict | None = None,
+) -> BytesIO:
+    """Build a client-ready briefing note in Turkish as DOCX. Values are inserted from model outputs."""
+    total_gen_mwh = _safe_float(df_all_used.get("Generation_MWh", pd.Series(dtype=float)).sum(), 0.0)
+    total_emis_t = _safe_float(df_all_used.get("Emissions_tCO2", pd.Series(dtype=float)).sum(), 0.0)
+
+    # Benchmarks table
+    bench_rows = sorted([(k, _safe_float(v, np.nan)) for k, v in benchmark_map.items()], key=lambda x: str(x[0]))
+
+    # Key metrics
+    total_cost_eur = _safe_float(sonuc_df.get("ets_cost_total_€", pd.Series(dtype=float)).sum(), 0.0)
+    total_rev_eur = _safe_float(sonuc_df.get("ets_revenue_total_€", pd.Series(dtype=float)).sum(), 0.0)
+    net_cf_eur = _safe_float(sonuc_df.get("ets_net_cashflow_€", pd.Series(dtype=float)).sum(), 0.0)
+
+    doc = Document()
+
+    # Title
+    title = doc.add_paragraph("Elektrik Üretim Sektörü için Emisyon Ticaret Sistemi (ETS)")
+    title.runs[0].bold = True
+    title.runs[0].font.size = Pt(16)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    subtitle = doc.add_paragraph("Benchmark ve Karbon Fiyatı Hesaplama Modülü – Bilgi Notu")
+    subtitle.runs[0].italic = True
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph(f"Tarih: {datetime.now().strftime('%d.%m.%Y')}").alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph("")
+
+    # 1. Scope
+    doc.add_heading("1. Çalışmanın Kapsamı ve Amacı", level=2)
+    doc.add_paragraph(
+        "Bu çalışma, 2024 yılına ait gerçekleşmiş elektrik üretimi ve emisyon verileri esas alınarak, "
+        "2026–2027 döneminde uygulanması öngörülen Emisyon Ticaret Sistemi (ETS) kapsamında elektrik üretim santrallerinin "
+        "karşılaşabileceği karbon maliyetlerinin analiz edilmesi amacıyla geliştirilmiştir."
+    )
+    doc.add_paragraph(
+        "Çalışmanın temel amacı, geçmiş yıl verilerini referans alarak orta vadeli ETS uygulama dönemine yönelik karbon fiyatı "
+        "ve maliyet etkilerini öngören; adil, piyasa temelli ve uygulanabilir bir analiz çerçevesi sunmaktır."
+    )
+
+    # 2. Coverage & benchmark
+    doc.add_heading("2. ETS Kapsamı ve Benchmark Yaklaşımı", level=2)
+    doc.add_paragraph(
+        "Bu çalışmada benchmark hesaplamaları yakıt bazlı olarak gerçekleştirilmiştir. Elektrik üretim santralleri, kullandıkları yakıt türüne göre ayrıştırılmış "
+        "ve her yakıt grubu için ayrı benchmark (referans emisyon yoğunluğu) değerleri hesaplanmıştır."
+    )
+    doc.add_paragraph(
+        "Bununla birlikte, ETS piyasası elektrik üretim sektörü açısından bütüncül olarak ele alınmış; karbon fiyatı hesaplamasında tüm elektrik üretim santralleri tek bir piyasada değerlendirilmiştir."
+    )
+    doc.add_paragraph(
+        "Not: Bu çalışmada, SKDM kapsamındaki diğer sanayi sektörleri, ilgili dönem için detaylı ve karşılaştırılabilir veri bulunmaması nedeniyle ETS piyasasına dahil edilmemiştir. Analiz yalnızca elektrik üretim sektörü ile sınırlandırılmıştır."
+    )
+
+    # 3. Benchmarks
+    doc.add_heading("3. Benchmark Yapısı ve Yakıt Bazlı Değerler", level=2)
+    p = doc.add_paragraph(
+        "2024 yılı gerçekleşmiş üretim ve emisyon verilerine dayalı olarak hesaplanan yakıt bazlı benchmark emisyon yoğunlukları (tCO2/MWh) aşağıda sunulmaktadır:"
+    )
+    table = doc.add_table(rows=1, cols=2)
+    hdr = table.rows[0].cells
+    hdr[0].text = "Yakıt Türü"
+    hdr[1].text = "Benchmark (tCO2/MWh)"
+    for ft, b in bench_rows:
+        row = table.add_row().cells
+        row[0].text = str(ft)
+        row[1].text = f"{b:.4f}" if not np.isnan(b) else "N/A"
+
+    doc.add_paragraph(
+        "Bu benchmark değerleri, 2026–2027 ETS uygulama döneminde tahsisat hesaplamalarında referans olarak kullanılmaktadır."
+    )
+
+    # 4. Reference year stats
+    doc.add_heading("4. Referans Yıl Üretim ve Emisyon Profili (2024)", level=2)
+    doc.add_paragraph(
+        f"Model kapsamında değerlendirilen ETS’ye tabi elektrik üretim santralleri, 2024 yılında toplam {total_gen_mwh:,.0f} MWh elektrik üretimi gerçekleştirmiştir. "
+        f"Aynı dönemde bu santrallerden kaynaklanan toplam karbondioksit (CO2) emisyonu {total_emis_t/1e6:,.2f} milyon ton olarak hesaplanmıştır."
+    )
+
+    # 5. Allocation - production weighted + AGK
+    doc.add_heading("5. Tahsisat Hesaplama Yöntemi (Üretim-Ağırlıklı Benchmark)", level=2)
+    doc.add_paragraph(
+        "Bu çalışmada tahsis edilen emisyon miktarları, santral bazında üretim-ağırlıklı benchmark yaklaşımı kullanılarak hesaplanmıştır. "
+        "Bu yaklaşımda, her bir santral için tahsis edilen emisyon miktarı, santralin elektrik üretim miktarı ile yakıt türüne özgü benchmark emisyon yoğunluğunun çarpımı yoluyla belirlenmektedir."
+    )
+    doc.add_paragraph("Tahsis Edilen Emisyon (tCO2) = Elektrik Üretimi (MWh) × Yakıt Bazlı Benchmark (tCO2/MWh)")
+
+    doc.add_heading("6. AGK (α) Katsayısının Tahsisat Hesaplamalarındaki Rolü", level=2)
+    doc.add_paragraph(
+        "Modelde, üretim-ağırlıklı benchmark yaklaşımına ek olarak AGK (α) katsayısı uygulanmıştır. AGK katsayısı, benchmark değerlerinin geçiş dönemi boyunca kademeli ve kontrollü şekilde ayarlanmasını sağlayan bir yumuşatma parametresidir."
+    )
+    doc.add_paragraph(
+        "AGK uygulanması durumunda tahsisat hesaplaması: Tahsis Edilen Emisyon (tCO2) = Elektrik Üretimi (MWh) × Yakıt Bazlı Benchmark (tCO2/MWh) × AGK (α)"
+    )
+
+    # 7. Net obligation
+    doc.add_heading("7. Net ETS Yükümlülüğünün Hesaplanması", level=2)
+    doc.add_paragraph("Net ETS Yükümlülüğü (tCO2) = Gerçekleşen Emisyon – Tahsis Edilen Emisyon")
+    doc.add_paragraph(
+        "Pozitif değerler, santralin ETS kapsamında piyasadan ilave emisyon izni satın alması gerektiğini; negatif değerler ise santralin emisyon fazlası bulunduğunu ve piyasaya arz sağlayabileceğini ifade etmektedir."
+    )
+
+    # 8. Carbon price method
+    doc.add_heading("8. Karbon Fiyatı Hesaplama Yöntemi (2026–2027 Dönemi)", level=2)
+    doc.add_paragraph(
+        "Karbon fiyatı, 2026–2027 döneminde ETS’nin yürürlükte olduğu varsayımı altında, arz-talep temelli piyasa dengeleme (market clearing) yaklaşımı kullanılarak hesaplanmıştır."
+    )
+    doc.add_paragraph(
+        f"Bu yöntem sonucunda, 2026–2027 dönemi için karbon fiyatı {clearing_price:.2f} €/tCO2 olarak hesaplanmıştır (yöntem: {price_method}; fiyat aralığı: {price_min}–{price_max} €/tCO2)."
+    )
+
+    # 9. Just transition, security of supply, AGK rationale
+    doc.add_heading("9. Adil Geçiş, Arz Güvenliği ve AGK Katsayısının Önemi", level=2)
+    doc.add_paragraph(
+        "Model, iklim değişikliğiyle mücadele hedeflerini desteklerken, elektrik arz güvenliği, ekonomik sürdürülebilirlik ve sosyal etkiler açısından bütüncül bir yaklaşım benimsemektedir. "
+        "Türkiye elektrik sistemi açısından kömür santralleri, geçiş döneminde baz yük üretimi ve sistem güvenliği bakımından hâlen önemli bir rol oynamaktadır."
+    )
+    doc.add_paragraph(
+        "Mevcut benchmark sisteminde, AGK (Adil Geçiş Katsayısı) uygulanmadan yapılan tahsisat hesaplamaları, özellikle teknolojik olarak daha eski ve emisyon yoğunluğu yüksek kömür santrallerinin orantısız biçimde yüksek karbon maliyetleriyle karşı karşıya kalmasına yol açabilmektedir. "
+        "Buna karşılık, aynı yakıtı kullanmasına rağmen daha yeni teknolojiye sahip ve görece düşük emisyon yoğunluğu bulunan santraller, benchmark sistemi içerisinde orantısız biçimde avantajlı konuma geçebilmektedir."
+    )
+    doc.add_paragraph(
+        "Bu durum, aşırı ceza ve aşırı ödül mekanizmalarının oluşmasına neden olmakta ve daha dengeli, öngörülebilir ve nominal bir piyasa yapısını zayıflatabilmektedir. "
+        "Bu çerçevede modelde kullanılan AGK (α) katsayısı (adil geçiş katsayısı), söz konusu uç etkileri yumuşatmayı; aşırı cezalandırma ve aşırı ödüllendirme davranışlarını sınırlayarak geçiş süreciyle uyumlu bir karbon piyasası oluşmasını sağlamayı amaçlamaktadır."
+    )
+
+    if soma_example:
+        doc.add_paragraph(
+            f"Örnek (Soma B): AGK=1.00 varsayımı altında yıllık emisyon maliyeti {soma_example.get('agk1_cost_eur', 'N/A')} €, "
+            f"AGK={soma_example.get('agk_sel', agk):.2f} varsayımı altında {soma_example.get('agk_sel_cost_eur', 'N/A')} € olarak hesaplanmıştır."
+        )
+
+    # 10. €/MWh and TL/MWh
+    doc.add_heading("10. Santral Bazlı Elektrik Üretimi Başına Karbon Maliyeti (€/MWh ve TL/MWh)", level=2)
+    doc.add_paragraph(
+        "ETS’nin elektrik üretim maliyetleri üzerindeki etkisini daha açık ve karşılaştırılabilir biçimde ortaya koymak amacıyla, santral bazında birim elektrik üretimi başına karbon maliyeti hesaplanmıştır. Bu maliyet göstergesi hem €/MWh hem de TL/MWh cinsinden sunulmaktadır."
+    )
+    doc.add_paragraph(
+        "Karbon Maliyeti (€/MWh) = Net ETS Yükümlülüğü (tCO2) × Karbon Fiyatı (€/tCO2) ÷ Elektrik Üretimi (MWh)"
+    )
+    doc.add_paragraph(
+        f"Karbon Maliyeti (TL/MWh) = Karbon Maliyeti (€/MWh) × Döviz Kuru (TL/€). Bu bilgi notunda kullanılan dönüşüm kuru: {float(fx_rate):.2f} TL/€."
+    )
+
+    # 11. Chart
+    doc.add_heading("11. Grafiksel Gösterim: Santral Bazlı Net ETS Etkisi (TL/MWh)", level=2)
+    doc.add_paragraph(
+        "ETS’nin santral bazında birim elektrik üretim maliyeti üzerindeki etkisini sade ve karşılaştırılabilir biçimde göstermek amacıyla, tüm santraller için TL/MWh cinsinden net ETS etkisi bir sütun grafikte sunulmuştur. Santraller düşükten yükseğe doğru sıralanmıştır."
+    )
+    chart_png = build_tl_mwh_chart_png(sonuc_df, fx_rate=float(fx_rate))
+    doc.add_picture(chart_png, width=Inches(6.5))
+    cap = doc.add_paragraph("Şekil 1. Santral bazlı net ETS etkisi (TL/MWh) – düşükten yükseğe sıralı.")
+    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # 12. Assumptions & sliders (concise)
+    doc.add_heading("12. Varsayımlar ve Model Parametreleri", level=2)
+    doc.add_paragraph(
+        "Bu bölümde, modelin şeffaflığı ve senaryo karşılaştırmalarının tutarlılığı açısından temel varsayımlar ve arayüz parametreleri özetlenmektedir."
+    )
+
+    # Bullet-like paragraphs (official tone)
+    items = [
+        f"Referans veri yılı: 2024 (üretim ve emisyon gerçekleşmeleri). Hesaplamalar 2026–2027 ETS dönemi varsayımı altında yapılmıştır.",
+        f"Karbon fiyatı yöntemi: {price_method}. Fiyat aralığı: {price_min}–{price_max} €/tCO2.",
+        f"AGK (α): {agk:.2f}. Benchmark Top %: {benchmark_top_pct}. Yakıt bazlı benchmark yaklaşımı uygulanmıştır.",
+        f"Piyasa kalibrasyonu: β_bid={slope_bid}, β_ask={slope_ask}, spread={spread}.",
+        f"Veri temizleme: {'Açık' if do_clean else 'Kapalı'}." + (f" Outlier bandı: [{1-lower_pct:.2f}B, {1+upper_pct:.2f}B]." if do_clean else ""),
+        f"Kur varsayımı (TL/€): {float(fx_rate):.2f}.",
+        f"Toplam ETS maliyeti: {total_cost_eur:,.0f} €, toplam ETS geliri: {total_rev_eur:,.0f} €, net nakit akışı: {net_cf_eur:,.0f} €.",
+    ]
+    for it in items:
+        para = doc.add_paragraph(it, style=None)
+        para.paragraph_format.space_after = Pt(4)
+
+    # Save to bytes
+    out = BytesIO()
+    doc.save(out)
+    out.seek(0)
+    return out
 
 if uploaded is None:
     st.info("Lütfen bir Excel yükleyin.")
@@ -457,9 +668,6 @@ if st.button("Run ETS Model"):
             .head(20)
         )
 
-        # Excel-only AGK sensitivity table (no UI chart)
-        agk_excel_df = build_agk_excel_table(sonuc_df, agk_list_excel)
-
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             summary_df = pd.DataFrame(
@@ -473,7 +681,6 @@ if st.button("Run ETS Model"):
                         "Price Min",
                         "Price Max",
                         "AGK",
-                        "AGK Excel Scenarios",
                         "Benchmark Top %",
                         "Bid Slope",
                         "Ask Slope",
@@ -493,7 +700,6 @@ if st.button("Run ETS Model"):
                         price_min,
                         price_max,
                         agk,
-                        ", ".join([str(round(x, 2)) for x in agk_list_excel]),
                         int(benchmark_top_pct),
                         slope_bid,
                         slope_ask,
@@ -514,8 +720,6 @@ if st.button("Run ETS Model"):
             sellers_df.to_excel(writer, sheet_name="Sellers", index=False)
             curve_df.to_excel(writer, sheet_name="Market_Curve", index=False)
             cashflow_top20.to_excel(writer, sheet_name="Cashflow_Top20", index=False)
-            if not agk_excel_df.empty:
-                agk_excel_df.to_excel(writer, sheet_name="AGK_SONUC", index=False)
             if not removed_df.empty:
                 removed_df.to_excel(writer, sheet_name="Removed_Outliers", index=False)
 
@@ -572,6 +776,64 @@ if st.button("Run ETS Model"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+        # -------------------------
+        # Briefing Note (Word) export
+        # -------------------------
+        # Optional: compute AGK=1 reference for a single example plant (e.g., Soma B) to demonstrate smoothing impact.
+        soma_example = None
+        try:
+            sonuc_df_agk1, _, _ = ets_hesapla(
+                df_all,
+                price_min,
+                price_max,
+                1.0,  # AGK=1 reference
+                slope_bid=slope_bid,
+                slope_ask=slope_ask,
+                spread=spread,
+                benchmark_top_pct=int(benchmark_top_pct),
+                price_method=price_method,
+            )
+            target_plant = "Soma B"
+            if target_plant in set(sonuc_df_agk1.get("Plant", [])) and target_plant in set(sonuc_df.get("Plant", [])):
+                cost_agk1 = float(sonuc_df_agk1.loc[sonuc_df_agk1["Plant"] == target_plant, "ets_cost_total_€"].sum())
+                cost_sel = float(sonuc_df.loc[sonuc_df["Plant"] == target_plant, "ets_cost_total_€"].sum())
+                soma_example = {
+                    "plant": target_plant,
+                    "agk1_cost_eur": f"{cost_agk1:,.0f}",
+                    "agk_sel": float(agk),
+                    "agk_sel_cost_eur": f"{cost_sel:,.0f}",
+                }
+        except Exception:
+            soma_example = None
+
+        briefing_docx = generate_briefing_note_docx(
+            sonuc_df=sonuc_df,
+            benchmark_map=benchmark_map,
+            clearing_price=clearing_price,
+            price_method=price_method,
+            price_min=price_min,
+            price_max=price_max,
+            agk=agk,
+            benchmark_top_pct=int(benchmark_top_pct),
+            slope_bid=slope_bid,
+            slope_ask=slope_ask,
+            spread=spread,
+            do_clean=do_clean,
+            lower_pct=lower_pct,
+            upper_pct=upper_pct,
+            df_all_raw=df_all_raw,
+            df_all_used=df_all,
+            removed_df=removed_df,
+            fx_rate=fx_rate,
+            soma_example=soma_example,
+        )
+
+        st.download_button(
+            label="Download Briefing Note (Word)",
+            data=briefing_docx,
+            file_name="ETS_Bilgi_Notu.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
         csv_bytes = sonuc_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "Download results as CSV",
