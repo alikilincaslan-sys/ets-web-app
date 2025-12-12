@@ -2,110 +2,194 @@ import numpy as np
 import pandas as pd
 
 
-def market_clearing_price_linear(df, price_min, price_max, step=1):
-    if price_max <= price_min:
-        raise ValueError("price_max must be greater than price_min")
+def _compute_benchmark_top_percent(subset: pd.DataFrame, top_pct: int) -> float:
+    """
+    subset: tek yakıt (FuelType) filtresi uygulanmış df
+    top_pct: 10,20,...,100
+    Benchmark = seçilen grubun üretim ağırlıklı yoğunluğu = sum(E)/sum(G)
 
+    Seçim mantığı: intensity düşük olanlardan başlayıp
+    toplam üretimin top_pct kadarı dolana kadar seçer (production-share based).
+    """
+    if subset.empty:
+        return np.nan
+
+    sub = subset.copy()
+    sub["Generation_MWh"] = pd.to_numeric(sub["Generation_MWh"], errors="coerce")
+    sub["Emissions_tCO2"] = pd.to_numeric(sub["Emissions_tCO2"], errors="coerce")
+    sub = sub.dropna(subset=["Generation_MWh", "Emissions_tCO2"])
+    sub = sub[(sub["Generation_MWh"] > 0) & (sub["Emissions_tCO2"] >= 0)]
+
+    if sub.empty:
+        return np.nan
+
+    sub["intensity"] = sub["Emissions_tCO2"] / sub["Generation_MWh"]
+    sub = sub.sort_values("intensity", ascending=True)
+
+    # 100 => tüm tesisler
+    if top_pct >= 100:
+        return float(sub["Emissions_tCO2"].sum() / sub["Generation_MWh"].sum())
+
+    total_gen = float(sub["Generation_MWh"].sum())
+    if total_gen <= 0:
+        return np.nan
+
+    target_gen = total_gen * (top_pct / 100.0)
+
+    sub["cum_gen"] = sub["Generation_MWh"].cumsum()
+    chosen = sub[sub["cum_gen"] <= target_gen].copy()
+
+    # Güvenlik: en az 1 satır seç
+    if chosen.empty:
+        chosen = sub.head(1)
+
+    return float(chosen["Emissions_tCO2"].sum() / chosen["Generation_MWh"].sum())
+
+
+def _compute_benchmarks(df: pd.DataFrame, benchmark_top_pct: int = 100) -> dict:
+    """Yakıt bazında benchmark (B_fuel). Seçim: en iyi top% (intensity düşük)."""
+    bench = {}
+    for ft, g in df.groupby("FuelType"):
+        bench[ft] = _compute_benchmark_top_percent(g, int(benchmark_top_pct))
+    return bench
+
+
+def _build_bid_ask(
+    df: pd.DataFrame,
+    price_min: float,
+    price_max: float,
+    slope_bid: float,
+    slope_ask: float,
+    spread: float,
+) -> pd.DataFrame:
+    """
+    Basit BID/ASK üretimi:
+    - intensity > B => daha "kirli" => p_bid yukarı
+    - intensity < B => daha "temiz" => p_ask aşağı
+    """
+    out = df.copy()
+    delta = (out["intensity"] - out["B_fuel"]).fillna(0.0)
+
+    out["p_bid"] = np.clip(
+        price_min + slope_bid * np.maximum(delta, 0.0) + spread / 2.0,
+        price_min,
+        price_max,
+    )
+
+    out["p_ask"] = np.clip(
+        price_max - slope_ask * np.maximum(-delta, 0.0) - spread / 2.0,
+        price_min,
+        price_max,
+    )
+
+    return out
+
+
+def _market_clearing_price(df: pd.DataFrame, price_min: float, price_max: float, step: float = 1.0) -> float:
+    """
+    Tek piyasa clearing:
+    - Demand: fiyat arttıkça azalır (p_bid ile ölçek)
+    - Supply: fiyat arttıkça artar (p_ask ile ölçek)
+    İlk Supply >= Demand olduğu fiyat clearing.
+    """
     prices = np.arange(price_min, price_max + step, step)
 
-    buyers = df[df["net_ets"] > 0]
-    sellers = df[df["net_ets"] < 0]
+    buyers = df[df["net_ets"] > 0][["net_ets", "p_bid"]].copy()
+    sellers = df[df["net_ets"] < 0][["net_ets", "p_ask"]].copy()
 
     for p in prices:
-        total_demand = 0.0
-        total_supply = 0.0
+        # Demand
+        if buyers.empty:
+            demand = 0.0
+        else:
+            q0 = buyers["net_ets"].to_numpy()
+            p_bid = buyers["p_bid"].to_numpy()
+            denom = np.maximum(p_bid - price_min, 1e-9)
+            frac = 1.0 - (p - price_min) / denom
+            demand = float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
 
-        # Demand (buyers)
-        if not buyers.empty:
-            q0 = buyers["net_ets"].values
-            p_bid = buyers["p_bid"].values
-            denom = np.maximum(p_bid - price_min, 1e-6)
-            frac = 1 - (p - price_min) / denom
-            total_demand = np.sum(q0 * np.clip(frac, 0, 1))
-
-        # Supply (sellers)
-        if not sellers.empty:
-            q0 = (-sellers["net_ets"]).values
-            p_ask = sellers["p_ask"].values
-            denom = np.maximum(price_max - p_ask, 1e-6)
+        # Supply
+        if sellers.empty:
+            supply = 0.0
+        else:
+            q0 = (-sellers["net_ets"]).to_numpy()
+            p_ask = sellers["p_ask"].to_numpy()
+            denom = np.maximum(price_max - p_ask, 1e-9)
             frac = (p - p_ask) / denom
-            total_supply = np.sum(q0 * np.clip(frac, 0, 1))
+            supply = float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
 
-        if total_supply >= total_demand:
+        if supply >= demand:
             return float(p)
 
     return float(price_max)
 
 
 def ets_hesapla(
-    df,
-    price_min,
-    price_max,
-    agk,
-    slope_bid=150.0,
-    slope_ask=150.0,
-    spread=0.0,
+    df: pd.DataFrame,
+    price_min: float,
+    price_max: float,
+    agk: float,
+    slope_bid: float = 150,
+    slope_ask: float = 150,
+    spread: float = 0.0,
+    benchmark_top_pct: int = 100,  # ✅ yeni
 ):
+    """
+    AGK yönü:
+      AGK=1  -> tahsis yoğunluğu benchmark'a yaklaşır
+      AGK=0  -> tahsis yoğunluğu tesis yoğunluğuna yaklaşır
+
+    Formül:
+      T_i = I_i + AGK * (B_fuel - I_i)
+
+    Benchmark seçimi (yakıt bazında):
+      benchmark_top_pct=10 => en iyi %10 üretim dilimi
+      benchmark_top_pct=100 => tüm tesisler (eski davranış)
+    """
     required = ["Plant", "FuelType", "Emissions_tCO2", "Generation_MWh"]
-    for col in required:
-        if col not in df.columns:
-            raise ValueError(f"Missing column: {col}")
+    for c in required:
+        if c not in df.columns:
+            raise ValueError(f"Excel kolon eksik: {c}")
 
-    if not (0 <= agk <= 1):
-        raise ValueError("AGK must be between 0 and 1")
+    x = df.copy()
 
-    df = df.copy()
+    x["Emissions_tCO2"] = pd.to_numeric(x["Emissions_tCO2"], errors="coerce")
+    x["Generation_MWh"] = pd.to_numeric(x["Generation_MWh"], errors="coerce")
+    x = x.dropna(subset=["Emissions_tCO2", "Generation_MWh", "Plant", "FuelType"])
+    x = x[(x["Generation_MWh"] > 0) & (x["Emissions_tCO2"] >= 0)]
 
-    # 1) Gerçek yoğunluk (I)
-    df["intensity"] = df["Emissions_tCO2"] / df["Generation_MWh"]
+    # 1) Gerçek yoğunluk
+    x["intensity"] = x["Emissions_tCO2"] / x["Generation_MWh"]
 
-    # 2) Yakıt bazlı benchmark (B)
-    benchmark_map = {}
-    for ft in df["FuelType"].unique():
-        sub = df[df["FuelType"] == ft]
-        benchmark_map[ft] = sub["Emissions_tCO2"].sum() / sub["Generation_MWh"].sum()
+    # 2) Benchmark (yakıt bazında, seçime göre)
+    benchmark_map = _compute_benchmarks(x, benchmark_top_pct=int(benchmark_top_pct))
+    x["B_fuel"] = x["FuelType"].map(benchmark_map)
 
-    df["B_fuel"] = df["FuelType"].map(benchmark_map)
-
-    # 3) ✅ DOĞRU AGK FORMÜLÜ (TERSİ DÜZELTİLDİ)
-    # T_i = I_i + AGK * (B - I)
-    df["tahsis_intensity"] = (
-        df["intensity"] + agk * (df["B_fuel"] - df["intensity"])
-    )
+    # 3) Tahsis yoğunluğu
+    x["tahsis_intensity"] = x["intensity"] + float(agk) * (x["B_fuel"] - x["intensity"])
 
     # 4) Ücretsiz tahsis
-    df["free_alloc"] = df["Generation_MWh"] * df["tahsis_intensity"]
+    x["free_alloc"] = x["Generation_MWh"] * x["tahsis_intensity"]
 
     # 5) Net ETS pozisyonu
-    df["net_ets"] = df["Emissions_tCO2"] - df["free_alloc"]
+    x["net_ets"] = x["Emissions_tCO2"] - x["free_alloc"]
 
-    # 6) BID / ASK
-    delta = df["intensity"] - df["B_fuel"]
-
-    p_bid = price_min + slope_bid * np.maximum(delta, 0)
-    p_ask = price_min + slope_ask * np.maximum(-delta, 0)
-
-    p_bid = p_bid + spread / 2
-    p_ask = np.maximum(p_ask - spread / 2, price_min)
-
-    df["p_bid"] = p_bid.clip(price_min, price_max)
-    df["p_ask"] = p_ask.clip(price_min, price_max)
+    # 6) BID/ASK
+    x = _build_bid_ask(x, price_min, price_max, slope_bid, slope_ask, spread)
 
     # 7) Clearing price
-    clearing_price = market_clearing_price_linear(
-        df[["net_ets", "p_bid", "p_ask"]],
-        price_min,
-        price_max,
-    )
+    clearing_price = _market_clearing_price(x, price_min, price_max, step=1.0)
 
-    # 8) ETS nakit akışları
-    df["carbon_price"] = clearing_price
-    df["ets_cost_total_€"] = df["net_ets"].clip(lower=0) * clearing_price
-    df["ets_revenue_total_€"] = (-df["net_ets"]).clip(lower=0) * clearing_price
-    df["ets_net_cashflow_€"] = df["ets_revenue_total_€"] - df["ets_cost_total_€"]
+    # 8) Maliyet / gelir
+    x["carbon_price"] = clearing_price
 
-    df["ets_cost_€/MWh"] = df["ets_cost_total_€"] / df["Generation_MWh"]
-    df["ets_revenue_€/MWh"] = df["ets_revenue_total_€"] / df["Generation_MWh"]
-    df["ets_net_cashflow_€/MWh"] = df["ets_net_cashflow_€"] / df["Generation_MWh"]
+    x["ets_cost_total_€"] = x["net_ets"].clip(lower=0) * clearing_price
+    x["ets_revenue_total_€"] = (-x["net_ets"].clip(upper=0)) * clearing_price
 
-    return df, benchmark_map, clearing_price
+    x["ets_cost_€/MWh"] = x["ets_cost_total_€"] / x["Generation_MWh"]
+    x["ets_revenue_€/MWh"] = x["ets_revenue_total_€"] / x["Generation_MWh"]
+
+    x["ets_net_cashflow_€"] = x["ets_revenue_total_€"] - x["ets_cost_total_€"]
+    x["ets_net_cashflow_€/MWh"] = x["ets_net_cashflow_€"] / x["Generation_MWh"]
+
+    return x, benchmark_map, clearing_price
