@@ -1,88 +1,117 @@
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
+from io import BytesIO
 
-st.subheader("AGK (α) Değişimine Göre Emisyon Yoğunlukları — Tüm Santraller (Sıralı)")
+st.set_page_config(page_title="ETS AGK Excel Çıktısı", layout="wide")
 
-# 1) Kullanıcıdan birden fazla AGK (alpha) seçtirelim
-#    (İstersen bunu multiselect yerine slider + liste de yapabiliriz)
+st.title("AGK (α) Sonuçları — Sadece Excel Çıktısı")
+
+st.markdown(
+    """
+Bu sayfada **AGK grafiği yoktur**.  
+Seçtiğin **AGK (α)** değerleri için **tüm santrallerin** emisyon yoğunluğu/benchmark değerleri hazırlanır,
+santraller **düşükten yükseğe** sıralanır ve sonuçlar **Excel** olarak indirilir.
+"""
+)
+
+# ---------------------------------------------------------------------
+# 0) SENİN VERİN: df isimli dataframe, en az şu kolonları içermeli:
+#    - plant_name : santral adı
+#    - emission_intensity : (örnek) hesaplanan emisyon yoğunluğu (tCO2/MWh vb.)
+#
+# Eğer senin uygulamada df başka isimdeyse, aşağıdaki satırı kendi df'inle değiştir.
+# ---------------------------------------------------------------------
+try:
+    df  # noqa: F821
+except NameError:
+    st.warning(
+        "Bu dosyada örnek amaçlı bir iskelet var. Uygulamanın ana kısmında oluşturduğun "
+        "`df` dataframe'i bu sayfaya/alıma aktarılmalı (plant_name ve emission_intensity içermeli)."
+    )
+    st.stop()
+
+# ---------------------------------------------------------------------
+# 1) AGK (alpha) seçimi
+# ---------------------------------------------------------------------
 alpha_list = st.multiselect(
-    "Grafikte gösterilecek AGK (α) değerlerini seçin",
+    "Excel'de gösterilecek AGK (α) değerlerini seçin",
     options=[0.25, 0.5, 0.75, 0.9, 1.25, 1.5, 2.0],
-    default=[0.5, 0.75]
+    default=[0.5, 0.75],
 )
 
 if len(alpha_list) == 0:
     st.info("En az bir AGK (α) değeri seçin.")
     st.stop()
 
-# 2) SENİN MODELDEN GELEN VERİ: santral listesi ve ID/name
-#    df_plants: en azından 'plant_name' sütunu olsun.
-#    Aşağıdaki satırı kendi dataframe'inle değiştir:
-#    df_plants = results_df[['plant_name']].drop_duplicates().copy()
-df_plants = df[['plant_name']].drop_duplicates().copy()  # <-- kendi df ismine göre düzelt
 
-# 3) Burada her alpha için santral bazında emisyon yoğunluğu/benchmark değerini üretiyoruz.
-#    Bu fonksiyonu senin mevcut hesap fonksiyonunla değiştir.
+# ---------------------------------------------------------------------
+# 2) SENİN MODEL HESABIN: compute_intensity_by_alpha
+#    Bu fonksiyon mutlaka şu formatta dönmeli:
+#      plant_name | intensity
+#    intensity: AGK=alpha için santral bazında değer (emisyon yoğunluğu / benchmark)
+# ---------------------------------------------------------------------
 def compute_intensity_by_alpha(alpha: float) -> pd.DataFrame:
     """
-    ÇIKTI: plant_name, intensity_alpha
-    intensity_alpha: AGK=alpha için santral bazında emisyon yoğunluğu / benchmark değer(ler)i
+    ÇIKTI:
+      plant_name: santral adı
+      intensity : AGK (alpha) senaryosuna göre değer
+    NOT:
+      Aşağıdaki hesap, senin gerçek model fonksiyonunla değiştirilmeli.
     """
-    # ---- BURASI SENİN HESABIN ----
-    # Örnek: model fonksiyonun şöyle bir seri döndürüyor olsun:
-    # series = model_calc_intensity(df, alpha=alpha)  # index=plant_name
-    # out = series.reset_index().rename(columns={0:"intensity"})
-    #
-    # Şimdilik örnek bir placeholder:
+    # ---- PLACEHOLDER (örnek) ----
+    # Burayı, ETS modülündeki gerçek hesap fonksiyonunla değiştir.
     out = df.groupby("plant_name")["emission_intensity"].mean().reset_index()
     out = out.rename(columns={"emission_intensity": "intensity"})
-    # ---- BURAYA KADAR ----
+    # -----------------------------
+    return out[["plant_name", "intensity"]]
 
-    out["alpha"] = alpha
-    return out[["plant_name", "intensity", "alpha"]]
 
-frames = [compute_intensity_by_alpha(a) for a in alpha_list]
-df_plot = pd.concat(frames, ignore_index=True)
+def build_agk_table(alpha_list_) -> pd.DataFrame:
+    """AGK senaryolarını yan yana sütunlayıp (wide format) sıralı tablo üretir."""
+    frames = []
+    for a in alpha_list_:
+        tmp = compute_intensity_by_alpha(a).copy()
+        tmp = tmp.rename(columns={"intensity": f"AGK_{a}"})
+        frames.append(tmp.set_index("plant_name"))
 
-# 4) Sıralama: “seçilen” AGK’ya göre (ben ilk seçileni baz aldım)
-alpha_sort = alpha_list[0]
-order = (
-    df_plot[df_plot["alpha"] == alpha_sort]
-    .sort_values("intensity", ascending=True)["plant_name"]
-    .tolist()
+    out = pd.concat(frames, axis=1).reset_index()
+
+    # Santralleri ilk seçilen AGK sütununa göre düşükten yükseğe sırala
+    base_col = f"AGK_{alpha_list_[0]}"
+    if base_col in out.columns:
+        out = out.sort_values(base_col, ascending=True)
+
+    return out
+
+
+df_agk_excel = build_agk_table(alpha_list)
+
+st.subheader("Önizleme (Sadece Tablo)")
+st.dataframe(df_agk_excel, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------
+# 3) Excel üret + indirme butonu
+# ---------------------------------------------------------------------
+def to_excel_bytes(df_out: pd.DataFrame) -> bytes:
+    bio = BytesIO()
+    # openpyxl yoksa xlsxwriter'a düş
+    engine = "openpyxl"
+    try:
+        import openpyxl  # noqa: F401
+    except Exception:
+        engine = "xlsxwriter"
+
+    with pd.ExcelWriter(bio, engine=engine) as writer:
+        df_out.to_excel(writer, sheet_name="AGK_SONUC", index=False)
+    return bio.getvalue()
+
+
+excel_bytes = to_excel_bytes(df_agk_excel)
+
+st.download_button(
+    label="📥 AGK_SONUC Excel'i indir",
+    data=excel_bytes,
+    file_name="AGK_SONUC.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
-
-# 5) Grafik: X=Santral sırası (rank), Y=Yoğunluk, her alpha ayrı çizgi
-#    İstersen X eksenini plant_name yazdırabiliriz ama çok kalabalık olursa rank daha okunur.
-plant_to_rank = {p: i+1 for i, p in enumerate(order)}
-df_plot["rank"] = df_plot["plant_name"].map(plant_to_rank)
-df_plot = df_plot.dropna(subset=["rank"]).sort_values(["alpha", "rank"])
-
-fig = go.Figure()
-
-for a in alpha_list:
-    dfa = df_plot[df_plot["alpha"] == a].sort_values("rank")
-    fig.add_trace(
-        go.Scatter(
-            x=dfa["rank"],
-            y=dfa["intensity"],
-            mode="lines",
-            name=f"AGK α={a}",
-            hovertemplate="Sıra: %{x}<br>Yoğunluk: %{y:.4f}<extra></extra>"
-        )
-    )
-
-fig.update_layout(
-    height=600,
-    xaxis_title=f"Santraller (düşük→yüksek sıralı) — sıralama α={alpha_sort}",
-    yaxis_title="Emisyon Yoğunluğu / Benchmark Değeri",
-    legend_title="AGK Senaryosu",
-    hovermode="x unified"
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# 6) İsteğe bağlı: hangi sıraya göre dizildiğini kullanıcı görsün
-with st.expander("Sıralanan santral listesi"):
-    st.dataframe(pd.DataFrame({"rank": range(1, len(order)+1), "plant_name": order}))
