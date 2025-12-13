@@ -37,7 +37,7 @@ DEFAULTS = {
     "lower_pct": 1.0,
     "upper_pct": 2.0,
     "fx_rate": 50.0,  # <<< EURO KURU SABİT 50 TL
-    "free_alloc_share": 100,
+    "trf": 0.0,
 }
 
 st.set_page_config(
@@ -81,10 +81,10 @@ def kpi_card(label, value, sub=""):
 # ============================================================
 # SIDEBAR – PARAMETERS
 # ============================================================
-st.sidebar.header("Model Parameters")
+st.sidebar.header("Model Parametreleri")
 
 price_min, price_max = st.sidebar.slider(
-    "Carbon Price Range (€/tCO₂)",
+    "Karbon Fiyat Aralığı (€/tCO₂)",
     0, 200,
     st.session_state.get("price_range", DEFAULTS["price_range"]),
     step=1,
@@ -92,7 +92,7 @@ price_min, price_max = st.sidebar.slider(
 )
 
 agk = st.sidebar.slider(
-    "Just Transition Coefficient (AGK)",
+    "Adil Geçiş Katsayısı (AGK)",
     0.0, 1.0,
     float(st.session_state.get("agk", DEFAULTS["agk"])),
     step=0.05,
@@ -100,36 +100,37 @@ agk = st.sidebar.slider(
 )
 
 benchmark_top_pct = st.sidebar.select_slider(
-    "Benchmark = Best plants %",
+    "Benchmark = En iyi santraller (%)",
     options=[10,20,30,40,50,60,70,80,90,100],
     value=int(st.session_state.get("benchmark_top_pct", DEFAULTS["benchmark_top_pct"])),
     key="benchmark_top_pct"
 )
 
 price_method = st.sidebar.selectbox(
-    "Price Method",
+    "Fiyat Hesaplama Yöntemi",
     ["Market Clearing", "Average Compliance Cost"],
     index=0
 )
 
-slope_bid = st.sidebar.slider("Bid Slope", 10, 500, DEFAULTS["slope_bid"], step=10)
-slope_ask = st.sidebar.slider("Ask Slope", 10, 500, DEFAULTS["slope_ask"], step=10)
+slope_bid = st.sidebar.slider("Talep Eğimi (β_bid)", 10, 500, DEFAULTS["slope_bid"], step=10)
+slope_ask = st.sidebar.slider("Arz Eğimi (β_ask)", 10, 500, DEFAULTS["slope_ask"], step=10)
 spread = st.sidebar.slider("Bid/Ask Spread", 0.0, 10.0, DEFAULTS["spread"], step=0.5)
 
 fx_rate = st.sidebar.number_input(
-    "FX Rate (TL/€)",
+    "Euro Kuru (TL/€)",
     min_value=0.0,
     value=float(DEFAULTS["fx_rate"]),
     step=1.0
 )
 
-free_alloc_share = st.sidebar.slider(
-    "Free allocation share (%)",
-    min_value=0,
-    max_value=100,
-    value=int(DEFAULTS["free_alloc_share"]),
-    step=10,
-    help="Benchmark-based free allocation share applied before market clearing. 100%=full free allocation; 0%=no free allocation."
+trf = st.sidebar.slider(
+    "Geçiş Dönemi Telafi Katsayısı (TRF)",
+    min_value=0.0,
+    max_value=1.0,
+    value=float(DEFAULTS.get("trf", 0.0)),
+    step=0.05,
+    help="Pilot dönemde, benchmark nedeniyle oluşan ilave yükün ne kadarının ücretsiz telafi edileceğini gösterir. "
+         "TRF=0 → telafi yok; TRF=1 → (I−B) farkının tamamı telafi edilir (sadece I>B olan tesisler için)."
 )
 
 
@@ -171,7 +172,7 @@ if st.button("Run ETS Model"):
         spread=spread,
         benchmark_top_pct=int(benchmark_top_pct),
         price_method=price_method,
-        free_alloc_share=float(free_alloc_share)
+        trf=float(trf)
     )
 
     st.success(f"Carbon Price: {clearing_price:.2f} €/tCO₂")
