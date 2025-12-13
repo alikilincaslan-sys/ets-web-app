@@ -23,23 +23,25 @@ st.title("ETS Development Module – Policy Dashboard")
 
 
 # ============================================================
-# STYLE (IEA-like clean UI)
+# STYLE (IEA-like clean UI) Görsel Kutucuk yazu stilleri
 # ============================================================
 st.markdown("""
 <style>
 .kpi {
-    background: white;
+    background: #ffffff;
     border-radius: 14px;
     padding: 14px;
-    border: 1px solid #e6e6e6;
+    border: 1px solid rgba(0,0,0,0.10);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.10);
 }
 .kpi-label {
     font-size: 0.8rem;
-    color: #666;
+    color: rgba(0,0,0,0.65) !important;
 }
 .kpi-value {
     font-size: 1.6rem;
     font-weight: 700;
+    color: rgba(0,0,0,0.88) !important;
 }
 </style>
 """, unsafe_allow_html=True)
