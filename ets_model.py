@@ -155,8 +155,8 @@ def ets_hesapla(
     slope_ask: float = 150,
     spread: float = 0.0,
     benchmark_top_pct: int = 100,
+    free_alloc_share: float = 100.0,
     price_method: str = "Market Clearing",  # ✅ yeni
-    free_alloc_share: float = 100.0,  # ✅ new: free allocation share (%)
 ):
     """
     AGK yönü:
@@ -199,9 +199,9 @@ def ets_hesapla(
     # 4) Ücretsiz tahsis
     x["free_alloc"] = x["Generation_MWh"] * x["tahsis_intensity"]
 
-    # 4b) Free allocation share (policy lever)
-    x["free_alloc"] = x["free_alloc"] * (float(free_alloc_share) / 100.0)
 
+    # Free allocation share (policy lever): 100%=full free allocation; 0%=no free allocation
+    x["free_alloc"] = x["free_alloc"] * (float(free_alloc_share) / 100.0)
     # 5) Net ETS pozisyonu
     x["net_ets"] = x["Emissions_tCO2"] - x["free_alloc"]
 
