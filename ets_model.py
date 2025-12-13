@@ -192,42 +192,50 @@ def _average_compliance_cost_price(df: pd.DataFrame, price_min: float, price_max
     return float(np.clip(acc, price_min, price_max))
 
 
-
-
-def _auction_clearing_price(df: pd.DataFrame, price_min: float, price_max: float, auction_supply_share: float = 100.0) -> float:
+# ============================================================
+# ADD: AUCTION CLEARING
+# ============================================================
+def _auction_clearing_price(
+    df: pd.DataFrame,
+    price_min: float,
+    price_max: float,
+    auction_supply_share: float = 1.0,
+) -> float:
     """
-    Simple allowance auction clearing (year-end compliance demand is quantity-fixed).
+    Auction Clearing (talep sabit, yıl sonu compliance):
 
-    - Demand quantity: sum of positive net_ets (tCO2) across plants
-    - Each plant bids at p_bid for its needed quantity
-    - Supply quantity: auction_supply_share (%) of total demand
-    - Clearing price: p_bid of the marginal (last winning) bidder
-      If supply >= demand -> price_min (oversupply; clears at floor)
+      Demand = sum(net_ets) for buyers (net_ets > 0)
+      Supply = Demand * auction_supply_share
+
+      En yüksek p_bid verenlerden başlayarak Supply kadar tahsis edilir.
+      Clearing price = marjinal kazanan teklifin p_bid'i.
+
+    Basit varsayım:
+      Supply >= Demand ise fiyat floor gibi davranır -> price_min
     """
-    buyers = df[df["net_ets"] > 0].copy()
+    buyers = df[df["net_ets"] > 0][["net_ets", "p_bid"]].copy()
     if buyers.empty:
         return float(price_min)
 
-    demand_qty = float(buyers["net_ets"].sum())
-    if demand_qty <= 0:
+    demand = float(buyers["net_ets"].sum())
+    if not np.isfinite(demand) or demand <= 0:
         return float(price_min)
 
-    supply_qty = demand_qty * float(auction_supply_share) / 100.0
+    supply = demand * float(auction_supply_share)
+    if not np.isfinite(supply) or supply <= 0:
+        # aşırı kıtlık gibi düşün: üst banda yasla
+        return float(price_max)
 
-    # Oversupply -> clears at floor
-    if supply_qty >= demand_qty:
+    if supply >= demand:
         return float(price_min)
 
     buyers = buyers.sort_values("p_bid", ascending=False)
-    buyers["cum_qty"] = buyers["net_ets"].cumsum()
+    cum = buyers["net_ets"].cumsum()
 
-    marginal = buyers[buyers["cum_qty"] >= supply_qty].head(1)
-    if marginal.empty:
-        # Numerical edge case
-        return float(price_max)
+    idx = int(min(max(cum.searchsorted(supply, side="left"), 0), len(buyers) - 1))
+    clearing = float(buyers.iloc[idx]["p_bid"])
+    return float(np.clip(clearing, price_min, price_max))
 
-    p = float(marginal["p_bid"].iloc[0])
-    return float(np.clip(p, price_min, price_max))
 
 def ets_hesapla(
     df: pd.DataFrame,
@@ -241,9 +249,9 @@ def ets_hesapla(
     cap_col: str = "InstalledCapacity_MW",
     benchmark_top_pct: int = 100,
     free_alloc_share: float = 100.0,
-    auction_supply_share: float = 100.0,
     trf: float = 0.0,
     price_method: str = "Market Clearing",  # ✅ yeni
+    auction_supply_share: float = 1.0,      # ✅ ADD
 ):
     """
     AGK yönü:
@@ -281,7 +289,12 @@ def ets_hesapla(
     x["intensity"] = x["Emissions_tCO2"] / x["Generation_MWh"]
 
     # 2) Benchmark (yakıt bazında)
-    benchmark_map = _compute_benchmarks(x, benchmark_method=benchmark_method, benchmark_top_pct=int(benchmark_top_pct), cap_col=cap_col)
+    benchmark_map = _compute_benchmarks(
+        x,
+        benchmark_method=benchmark_method,
+        benchmark_top_pct=int(benchmark_top_pct),
+        cap_col=cap_col
+    )
     x["B_fuel"] = x["FuelType"].map(benchmark_map)
 
     # 3) Tahsis yoğunluğu (AGK)
@@ -290,10 +303,9 @@ def ets_hesapla(
     # 4) Ücretsiz tahsis
     x["free_alloc"] = x["Generation_MWh"] * x["tahsis_intensity"]
 
-
     # Free allocation share (policy lever): 100%=full free allocation; 0%=no free allocation
     x["free_alloc"] = x["free_alloc"] * (float(free_alloc_share) / 100.0)
-    
+
     # TRF (Geçiş Dönemi Telafi Katsayısı): benchmark nedeniyle oluşan ilave yükün pilot dönemde telafisi
     # İlave tahsis (tCO2) = max(0, intensity - B_fuel) * Generation_MWh * TRF
     trf_val = float(trf) if trf is not None else 0.0
@@ -312,7 +324,9 @@ def ets_hesapla(
     if price_method == "Average Compliance Cost":
         clearing_price = _average_compliance_cost_price(x, price_min, price_max)
     elif price_method == "Auction Clearing":
-        clearing_price = _auction_clearing_price(x, price_min, price_max, auction_supply_share=auction_supply_share)
+        clearing_price = _auction_clearing_price(
+            x, price_min, price_max, auction_supply_share=float(auction_supply_share)
+        )
     else:
         clearing_price = _market_clearing_price(x, price_min, price_max, step=1.0)
 
