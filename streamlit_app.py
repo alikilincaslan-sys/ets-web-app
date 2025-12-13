@@ -1,112 +1,145 @@
 # ============================================================
-# ETS GELİŞTİRME MODÜLÜ V001 – IEA STYLE INFOGRAPHIC DASHBOARD
+# ETS GELİŞTİRME MODÜLÜ V001 – FINAL (Infographic + Word Note)
 # ============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
+import matplotlib.pyplot as plt
+
+from datetime import datetime
+from io import BytesIO
+
+from docx import Document
+from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+from openpyxl.chart import LineChart, BarChart, Reference
+from openpyxl.chart.label import DataLabelList
 
 from ets_model import ets_hesapla
-from data_cleaning import clean_ets_input
+from data_cleaning import clean_ets_input, filter_intensity_outliers_by_fuel
 
 
 # ============================================================
-# CONFIG
+# DEFAULTS
 # ============================================================
+DEFAULTS = {
+    "price_range": (5, 20),
+    "agk": 1.00,
+    "benchmark_top_pct": 100,
+    "price_method": "Market Clearing",
+    "slope_bid": 150,
+    "slope_ask": 150,
+    "spread": 1.0,
+    "do_clean": False,
+    "lower_pct": 1.0,
+    "upper_pct": 2.0,
+    "fx_rate": 50.0,  # <<< EURO KURU SABİT 50 TL
+    "free_alloc_share": 100,  # <<< Free allocation share (%)
+}
+
 st.set_page_config(
-    page_title="ETS Development Module | Policy Dashboard",
+    page_title="ETS Geliştirme Modülü V001",
     layout="wide"
 )
 
-st.title("ETS Development Module – Policy Dashboard")
+st.title("ETS Geliştirme Modülü V001")
 
 
 # ============================================================
-# STYLE (IEA-like clean UI) Görsel Kutucuk yazu stilleri
+# INFOGRAPHIC CSS
 # ============================================================
 st.markdown("""
 <style>
-.kpi {
-    background: rgba(255,255,255,0.92);
-    border-radius: 14px;
+  .kpi {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 16px;
     padding: 14px;
-    border: 1px solid rgba(0,0,0,0.10);
-    box-shadow: 0 8px 22px rgba(0,0,0,0.10);
-}
-.kpi-label {
-    font-size: 0.8rem;
-    color: rgba(0,0,0,0.65) !important;
-}
-.kpi-value {
-    font-size: 1.6rem;
-    font-weight: 700;
-    color: rgba(0,0,0,0.88) !important;
-}
+    box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+  }
+  .kpi .label { font-size: 0.85rem; opacity: 0.75; }
+  .kpi .value { font-size: 1.45rem; font-weight: 700; }
+  .kpi .sub { font-size: 0.8rem; opacity: 0.7; }
+  .caption { font-size: 0.85rem; opacity: 0.75; }
 </style>
 """, unsafe_allow_html=True)
 
 
-def kpi(label, value):
+def kpi_card(label, value, sub=""):
     st.markdown(f"""
     <div class="kpi">
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
+      <div class="label">{label}</div>
+      <div class="value">{value}</div>
+      <div class="sub">{sub}</div>
     </div>
     """, unsafe_allow_html=True)
 
 
 # ============================================================
-# SIDEBAR
+# SIDEBAR – PARAMETERS
 # ============================================================
-st.sidebar.header("Scenario Parameters")
+st.sidebar.header("Model Parameters")
 
 price_min, price_max = st.sidebar.slider(
-    "Carbon price range (€/tCO₂)",
-    0, 200, (5, 20), step=1
+    "Carbon Price Range (€/tCO₂)",
+    0, 200,
+    st.session_state.get("price_range", DEFAULTS["price_range"]),
+    step=1,
+    key="price_range"
 )
 
 agk = st.sidebar.slider(
     "Just Transition Coefficient (AGK)",
-    0.0, 1.0, 1.0, step=0.05
+    0.0, 1.0,
+    float(st.session_state.get("agk", DEFAULTS["agk"])),
+    step=0.05,
+    key="agk"
 )
+
 free_alloc_share = st.sidebar.slider(
     "Free allocation share (%)",
     min_value=0,
     max_value=100,
-    value=100,
+    value=int(st.session_state.get("free_alloc_share", DEFAULTS["free_alloc_share"])),
     step=10,
-    help="Share of benchmark-based free allocation applied to installations."
+    key="free_alloc_share",
+    help="Share of benchmark-based free allocation applied before market clearing. 100%=full free allocation, 0%=full auctioning.",
 )
 
+
 benchmark_top_pct = st.sidebar.select_slider(
-    "Benchmark (best plants %)",
+    "Benchmark = Best plants %",
     options=[10,20,30,40,50,60,70,80,90,100],
-    value=100
+    value=int(st.session_state.get("benchmark_top_pct", DEFAULTS["benchmark_top_pct"])),
+    key="benchmark_top_pct"
 )
 
 price_method = st.sidebar.selectbox(
-    "Carbon price method",
-    ["Market Clearing", "Average Compliance Cost"]
+    "Price Method",
+    ["Market Clearing", "Average Compliance Cost"],
+    index=0
 )
 
+slope_bid = st.sidebar.slider("Bid Slope", 10, 500, DEFAULTS["slope_bid"], step=10)
+slope_ask = st.sidebar.slider("Ask Slope", 10, 500, DEFAULTS["slope_ask"], step=10)
+spread = st.sidebar.slider("Bid/Ask Spread", 0.0, 10.0, DEFAULTS["spread"], step=0.5)
+
 fx_rate = st.sidebar.number_input(
-    "FX rate (TL/€)",
-    value=50.0,
+    "FX Rate (TL/€)",
+    min_value=0.0,
+    value=float(DEFAULTS["fx_rate"]),
     step=1.0
 )
 
 
 # ============================================================
-# DATA UPLOAD
+# FILE UPLOAD
 # ============================================================
-uploaded = st.file_uploader(
-    "Upload ETS input Excel file",
-    type=["xlsx"]
-)
-
+uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
 if uploaded is None:
-    st.info("Please upload an Excel file to start.")
+    st.info("Lütfen Excel dosyası yükleyin.")
     st.stop()
 
 
@@ -120,105 +153,80 @@ def read_all_sheets(file):
     return pd.concat(frames, ignore_index=True)
 
 
-df_raw = read_all_sheets(uploaded)
-df = clean_ets_input(df_raw)
+df_all_raw = read_all_sheets(uploaded)
+df_all = clean_ets_input(df_all_raw)
 
 
 # ============================================================
 # RUN MODEL
 # ============================================================
-if st.button("Run ETS Simulation"):
+if st.button("Run ETS Model"):
 
     sonuc_df, benchmark_map, clearing_price = ets_hesapla(
-        df,
+        df_all,
         price_min,
         price_max,
         agk,
+        slope_bid=slope_bid,
+        slope_ask=slope_ask,
+        spread=spread,
         benchmark_top_pct=int(benchmark_top_pct),
-        price_method=price_method
+        price_method=price_method,
+        free_alloc_share=free_alloc_share,
     )
 
-    # ========================================================
-    # KPI ROW (POLICY SNAPSHOT)
-    # ========================================================
-    total_gen = df["Generation_MWh"].sum()
-    total_emis = df["Emissions_tCO2"].sum() / 1e6
-
-    avg_cost_tl_mwh = (
-        (sonuc_df["ets_net_cashflow_€/MWh"] * fx_rate * sonuc_df["Generation_MWh"]).sum()
-        / sonuc_df["Generation_MWh"].sum()
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: kpi("Total generation (2024)", f"{total_gen:,.0f} MWh")
-    with c2: kpi("Total emissions (2024)", f"{total_emis:,.2f} MtCO₂")
-    with c3: kpi("Carbon price (2026–27)", f"{clearing_price:.2f} €/tCO₂")
-    with c4: kpi("Avg ETS impact", f"{avg_cost_tl_mwh:,.1f} TL/MWh")
-
-
-    st.markdown("---")
+    st.success(f"Carbon Price: {clearing_price:.2f} €/tCO₂")
 
     # ========================================================
-    # IEA STYLE INFOGRAPHIC BAR
+    # INFOGRAPHIC KPI ROW
     # ========================================================
-    st.subheader("Net ETS impact on electricity generation costs")
+    total_gen = df_all["Generation_MWh"].sum()
+    total_emis = df_all["Emissions_tCO2"].sum() / 1e6
+
+    if "ets_net_cashflow_€/MWh" in sonuc_df.columns:
+        avg_tl_mwh = (
+            (sonuc_df["ets_net_cashflow_€/MWh"] * fx_rate * sonuc_df["Generation_MWh"]).sum()
+            / sonuc_df["Generation_MWh"].sum()
+        )
+    else:
+        avg_tl_mwh = np.nan
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1: kpi_card("Total Generation", f"{total_gen:,.0f} MWh", "2024")
+    with c2: kpi_card("Total Emissions", f"{total_emis:,.2f} MtCO₂", "2024")
+    with c3: kpi_card("Carbon Price", f"{clearing_price:.2f} €/tCO₂", price_method)
+    with c4: kpi_card("FX Rate", f"{fx_rate:.0f} TL/€", "Scenario")
+    with c5: kpi_card("Avg ETS Impact", f"{avg_tl_mwh:,.2f} TL/MWh", "Gen.-weighted")
+
+    # ========================================================
+    # INFOGRAPHIC – SINGLE CLEAN CHART
+    # ========================================================
+    st.subheader("Santral Bazlı Net ETS Etkisi (TL/MWh)")
 
     df_plot = sonuc_df.copy()
     df_plot["TL_per_MWh"] = df_plot["ets_net_cashflow_€/MWh"] * fx_rate
+    df_plot = df_plot.sort_values("TL_per_MWh")
 
-    # IEA-style focus: Top 30 most affected plants
-    df_plot = df_plot.sort_values("TL_per_MWh").head(30)
-
-    df_plot["Impact"] = np.where(
-        df_plot["TL_per_MWh"] >= 0,
-        "Cost increase",
-        "Cost reduction"
-    )
-
-    fig = px.bar(
-        df_plot,
-        x="TL_per_MWh",
-        y="Plant",
-        orientation="h",
-        color="Impact",
-        color_discrete_map={
-            "Cost increase": "#c0392b",
-            "Cost reduction": "#2980b9"
-        },
-        labels={
-            "TL_per_MWh": "Net ETS impact (TL/MWh)",
-            "Plant": ""
-        },
-        title="Net ETS impact on electricity generation costs (TL/MWh)<br><sup>Top 30 plants, sorted</sup>"
-    )
-
-    fig.update_layout(
-        template="simple_white",
-        height=750,
-        bargap=0.18,
-        title_x=0.01,
-        legend_orientation="h",
-        legend_y=1.08,
-        legend_x=0.01,
-        xaxis=dict(
-            zeroline=True,
-            zerolinecolor="black",
-            gridcolor="rgba(0,0,0,0.05)"
-        ),
-        yaxis=dict(tickfont=dict(size=11))
-    )
-
-    fig.update_traces(
-        hovertemplate=
-        "<b>%{y}</b><br>" +
-        "Net ETS impact: %{x:.1f} TL/MWh<br>" +
-        "<extra></extra>"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+    fig, ax = plt.subplots(figsize=(11, max(6, 0.3 * len(df_plot))))
+    ax.barh(df_plot["Plant"], df_plot["TL_per_MWh"])
+    ax.set_xlabel("TL / MWh")
+    ax.set_ylabel("Plant")
+    ax.set_title("Net ETS Etkisi – düşükten yükseğe")
+    ax.grid(True, axis="x", alpha=0.3)
+    st.pyplot(fig, use_container_width=True)
 
     # ========================================================
-    # FULL TABLE (OPTIONAL – COLLAPSIBLE)
+    # RAW TABLE
     # ========================================================
-    with st.expander("Show full plant-level results table"):
-        st.dataframe(sonuc_df, use_container_width=True)
+    st.subheader("Tüm Sonuçlar (Ham Tablo)")
+    st.dataframe(sonuc_df, use_container_width=True)
+
+    # ========================================================
+    # CSV DOWNLOAD
+    # ========================================================
+    st.download_button(
+        "Download results as CSV",
+        data=sonuc_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="ets_results.csv",
+        mime="text/csv"
+    )
