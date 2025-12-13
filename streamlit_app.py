@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.express as px
 
 from datetime import datetime
 from io import BytesIO
@@ -36,7 +37,7 @@ DEFAULTS = {
     "lower_pct": 1.0,
     "upper_pct": 2.0,
     "fx_rate": 50.0,  # <<< EURO KURU SABİT 50 TL
-    "free_alloc_share": 100,  # <<< Free allocation share (%)
+    "free_alloc_share": 100,
 }
 
 st.set_page_config(
@@ -50,19 +51,19 @@ st.title("ETS Geliştirme Modülü V001")
 # ============================================================
 # INFOGRAPHIC CSS
 # ============================================================
+
 st.markdown("""
 <style>
   .kpi {
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 16px;
-    padding: 14px;
-    box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+    background: rgba(255,255,255,0.95);
+    border: 1px solid rgba(0,0,0,0.10);
+    border-radius: 18px;
+    padding: 14px 16px;
+    box-shadow: 0 10px 28px rgba(0,0,0,0.10);
   }
-  .kpi .label { font-size: 0.85rem; opacity: 0.75; }
-  .kpi .value { font-size: 1.45rem; font-weight: 700; }
-  .kpi .sub { font-size: 0.8rem; opacity: 0.7; }
-  .caption { font-size: 0.85rem; opacity: 0.75; }
+  .kpi .label { font-size: 0.85rem; color: rgba(0,0,0,0.65); }
+  .kpi .value { font-size: 1.55rem; font-weight: 750; color: rgba(0,0,0,0.90); line-height: 1.1; }
+  .kpi .sub { font-size: 0.8rem; color: rgba(0,0,0,0.60); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -98,17 +99,6 @@ agk = st.sidebar.slider(
     key="agk"
 )
 
-free_alloc_share = st.sidebar.slider(
-    "Free allocation share (%)",
-    min_value=0,
-    max_value=100,
-    value=int(st.session_state.get("free_alloc_share", DEFAULTS["free_alloc_share"])),
-    step=10,
-    key="free_alloc_share",
-    help="Share of benchmark-based free allocation applied before market clearing. 100%=full free allocation, 0%=full auctioning.",
-)
-
-
 benchmark_top_pct = st.sidebar.select_slider(
     "Benchmark = Best plants %",
     options=[10,20,30,40,50,60,70,80,90,100],
@@ -131,6 +121,15 @@ fx_rate = st.sidebar.number_input(
     min_value=0.0,
     value=float(DEFAULTS["fx_rate"]),
     step=1.0
+)
+
+free_alloc_share = st.sidebar.slider(
+    "Free allocation share (%)",
+    min_value=0,
+    max_value=100,
+    value=int(DEFAULTS["free_alloc_share"]),
+    step=10,
+    help="Benchmark-based free allocation share applied before market clearing. 100%=full free allocation; 0%=no free allocation."
 )
 
 
@@ -172,7 +171,7 @@ if st.button("Run ETS Model"):
         spread=spread,
         benchmark_top_pct=int(benchmark_top_pct),
         price_method=price_method,
-        free_alloc_share=free_alloc_share,
+        free_alloc_share=float(free_alloc_share)
     )
 
     st.success(f"Carbon Price: {clearing_price:.2f} €/tCO₂")
@@ -207,13 +206,48 @@ if st.button("Run ETS Model"):
     df_plot["TL_per_MWh"] = df_plot["ets_net_cashflow_€/MWh"] * fx_rate
     df_plot = df_plot.sort_values("TL_per_MWh")
 
-    fig, ax = plt.subplots(figsize=(11, max(6, 0.3 * len(df_plot))))
-    ax.barh(df_plot["Plant"], df_plot["TL_per_MWh"])
-    ax.set_xlabel("TL / MWh")
-    ax.set_ylabel("Plant")
-    ax.set_title("Net ETS Etkisi – düşükten yükseğe")
-    ax.grid(True, axis="x", alpha=0.3)
-    st.pyplot(fig, use_container_width=True)
+    
+# IEA-style interactive infographic (Plotly)
+df_plot["Impact_Type"] = np.where(df_plot["TL_per_MWh"] >= 0, "Cost increase", "Cost reduction")
+
+# Focus view: show top N most affected plants for readability
+top_n = 30
+df_view = df_plot.copy()
+if len(df_view) > top_n:
+    # keep extremes by absolute value
+    df_view = df_view.reindex(df_view["TL_per_MWh"].abs().sort_values(ascending=False).head(top_n).index)
+    df_view = df_view.sort_values("TL_per_MWh")
+
+fig = px.bar(
+    df_view,
+    x="TL_per_MWh",
+    y="Plant",
+    orientation="h",
+    color="Impact_Type",
+    color_discrete_map={
+        "Cost increase": "#c0392b",
+        "Cost reduction": "#2980b9",
+    },
+    labels={"TL_per_MWh": "Net ETS impact (TL/MWh)", "Plant": "", "Impact_Type": ""},
+    title="Net ETS impact on electricity generation costs (TL/MWh)<br><sup>Most affected plants, sorted</sup>",
+)
+
+fig.update_layout(
+    template="simple_white",
+    height=750,
+    bargap=0.18,
+    title_x=0.01,
+    legend_orientation="h",
+    legend_y=1.08,
+    legend_x=0.01,
+    xaxis=dict(zeroline=True, zerolinecolor="black", gridcolor="rgba(0,0,0,0.06)"),
+    yaxis=dict(tickfont=dict(size=11)),
+)
+fig.update_traces(
+    hovertemplate="<b>%{y}</b><br>Net ETS impact: %{x:.1f} TL/MWh<extra></extra>"
+)
+
+st.plotly_chart(fig, use_container_width=True)
 
     # ========================================================
     # RAW TABLE
