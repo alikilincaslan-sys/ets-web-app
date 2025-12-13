@@ -29,6 +29,7 @@ DEFAULTS = {
     "price_range": (5, 20),
     "agk": 1.00,
     "benchmark_top_pct": 100,
+    "benchmark_method": "En iyi tesis dilimi (üretim payı)",
     "price_method": "Market Clearing",
     "slope_bid": 150,
     "slope_ask": 150,
@@ -99,12 +100,49 @@ agk = st.sidebar.slider(
     key="agk"
 )
 
-benchmark_top_pct = st.sidebar.select_slider(
-    "Benchmark = En iyi santraller (%)",
-    options=[10,20,30,40,50,60,70,80,90,100],
-    value=int(st.session_state.get("benchmark_top_pct", DEFAULTS["benchmark_top_pct"])),
-    key="benchmark_top_pct"
+# -------------------------
+# Benchmark belirleme yöntemi
+# -------------------------
+benchmark_method_tr = st.sidebar.selectbox(
+    "Benchmark belirleme yöntemi",
+    options=[
+        "Üretim ağırlıklı benchmark",
+        "Kurulu güç ağırlıklı benchmark",
+        "En iyi tesis dilimi (üretim payı)",
+    ],
+    index=[
+        "Üretim ağırlıklı benchmark",
+        "Kurulu güç ağırlıklı benchmark",
+        "En iyi tesis dilimi (üretim payı)",
+    ].index(st.session_state.get("benchmark_method", DEFAULTS.get("benchmark_method", "En iyi tesis dilimi (üretim payı)"))),
+    key="benchmark_method",
+    help="Benchmark, yakıt türü bazında hesaplanır. Seçilen yöntem sadece benchmark değerini (B_fuel) değiştirir; AGK formülü aynı kalır."
 )
+
+# Yöntem kodu (model tarafına giden)
+BENCH_METHOD_MAP = {
+    "Üretim ağırlıklı benchmark": "generation_weighted",
+    "Kurulu güç ağırlıklı benchmark": "capacity_weighted",
+    "En iyi tesis dilimi (üretim payı)": "best_plants",
+}
+benchmark_method = BENCH_METHOD_MAP.get(benchmark_method_tr, "best_plants")
+
+# En iyi tesis dilimi seçildiyse yüzde parametresi aktif
+if benchmark_method == "best_plants":
+    benchmark_top_pct = st.sidebar.select_slider(
+        "En iyi üretim dilimi (%)",
+        options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        value=int(st.session_state.get("benchmark_top_pct", DEFAULTS["benchmark_top_pct"])),
+        key="benchmark_top_pct",
+        help="Yakıt bazında intensity düşük olan santrallerden başlayarak, toplam üretimin seçilen yüzdesi dolana kadar seçim yapılır. Benchmark, seçilen dilimin üretim-ağırlıklı ortalamasıdır."
+    )
+else:
+    # Üretim ağırlıklı / kurulu güç ağırlıklı seçeneklerinde yüzde parametresi kullanılmaz
+    benchmark_top_pct = 100
+    st.sidebar.caption("Not: Bu yöntemde 'en iyi tesis yüzdesi' kullanılmaz (otomatik 100%).")
+
+if benchmark_method == "capacity_weighted":
+    st.sidebar.info("Kurulu güç ağırlıklı benchmark için Excel'de 'InstalledCapacity_MW' kolonu bulunmalıdır (her santral satırında).")
 
 price_method = st.sidebar.selectbox(
     "Fiyat Hesaplama Yöntemi",
@@ -171,6 +209,7 @@ if st.button("Run ETS Model"):
         slope_ask=slope_ask,
         spread=spread,
         benchmark_top_pct=int(benchmark_top_pct),
+        benchmark_method=benchmark_method,
         price_method=price_method,
         trf=float(trf)
     )
