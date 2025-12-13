@@ -156,6 +156,7 @@ def ets_hesapla(
     spread: float = 0.0,
     benchmark_top_pct: int = 100,
     free_alloc_share: float = 100.0,
+    trf: float = 0.0,
     price_method: str = "Market Clearing",  # ✅ yeni
 ):
     """
@@ -169,6 +170,9 @@ def ets_hesapla(
     Benchmark:
       benchmark_top_pct=10 => en iyi %10 üretim dilimi
       benchmark_top_pct=100 => tüm tesisler
+
+    TRF (Geçiş Dönemi Telafi Katsayısı):
+      İlave tahsis = max(0, I_i - B_fuel) * G_i * TRF
 
     Price method:
       - "Market Clearing"
@@ -202,10 +206,17 @@ def ets_hesapla(
 
     # Free allocation share (policy lever): 100%=full free allocation; 0%=no free allocation
     x["free_alloc"] = x["free_alloc"] * (float(free_alloc_share) / 100.0)
-    # 5) Net ETS pozisyonu
-    x["net_ets"] = x["Emissions_tCO2"] - x["free_alloc"]
+    
+    # TRF (Geçiş Dönemi Telafi Katsayısı): benchmark nedeniyle oluşan ilave yükün pilot dönemde telafisi
+    # İlave tahsis (tCO2) = max(0, intensity - B_fuel) * Generation_MWh * TRF
+    trf_val = float(trf) if trf is not None else 0.0
+    x["ilave_tahsis_trf"] = np.maximum(x["intensity"] - x["B_fuel"], 0.0) * x["Generation_MWh"] * trf_val
 
-    # 6) BID/ASK
+    # Toplam ücretsiz tahsis = mevcut tahsis + TRF ilavesi
+    x["free_alloc_total"] = x["free_alloc"] + x["ilave_tahsis_trf"]
+
+    # 5) Net ETS pozisyonu
+    x["net_ets"] = x["Emissions_tCO2"] - x["free_alloc_total"]    # 6) BID/ASK
     x = _build_bid_ask(x, price_min, price_max, slope_bid, slope_ask, spread)
 
     # 7) Price
