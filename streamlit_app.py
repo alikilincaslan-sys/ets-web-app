@@ -70,6 +70,14 @@ agk = st.sidebar.slider(
     "Just Transition Coefficient (AGK)",
     0.0, 1.0, 1.0, step=0.05
 )
+free_alloc_share = st.sidebar.slider(
+    "Free allocation share (%)",
+    min_value=0,
+    max_value=100,
+    value=100,
+    step=10,
+    help="Share of benchmark-based free allocation applied to installations."
+)
 
 benchmark_top_pct = st.sidebar.select_slider(
     "Benchmark (best plants %)",
