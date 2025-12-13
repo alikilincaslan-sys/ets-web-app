@@ -55,18 +55,34 @@ st.title("ETS Geliştirme Modülü v002")
 st.markdown("""
 <style>
   .kpi {
-    background: rgba(255,255,255,0.95);
-    border: 1px solid rgba(0,0,0,0.10);
-    border-radius: 18px;
+    background: #f2f2f2;
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 16px;
     padding: 14px 16px;
-    box-shadow: 0 10px 28px rgba(0,0,0,0.10);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+    min-height: 115px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
-  .kpi .label { font-size: 0.85rem; color: rgba(0,0,0,0.65); }
-  .kpi .value { font-size: 1.55rem; font-weight: 750; color: rgba(0,0,0,0.90); line-height: 1.1; }
-  .kpi .sub { font-size: 0.8rem; color: rgba(0,0,0,0.60); }
+  .kpi .label {
+    font-size: 0.80rem;
+    color: rgba(0,0,0,0.65);
+    margin-bottom: 4px;
+  }
+  .kpi .value {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: rgba(0,0,0,0.90);
+    line-height: 1.15;
+  }
+  .kpi .sub {
+    font-size: 0.75rem;
+    color: rgba(0,0,0,0.60);
+    margin-top: 4px;
+  }
 </style>
 """, unsafe_allow_html=True)
-
 
 def kpi_card(label, value, sub=""):
     st.markdown(f"""
