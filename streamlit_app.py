@@ -182,6 +182,27 @@ BENCHMARK_METHOD_MAP = {
 }
 benchmark_method_code = BENCHMARK_METHOD_MAP.get(benchmark_method, "best_plants")
 
+# ============================================================
+# BENCHMARK SCOPE (OPTIONAL FILTERING BY FUEL GROUP)
+# ============================================================
+st.sidebar.subheader("Benchmark scope (by fuel)")
+
+# Option meanings:
+# 1) Include all plants
+# 2) Exclude 5 plants with LOWEST emission intensity (EI)
+# 3) Exclude 5 plants with HIGHEST emission intensity (EI)
+
+SCOPE_OPTIONS = [
+    "Include all plants",
+    "Exclude 5 plants with LOWEST EI",
+    "Exclude 5 plants with HIGHEST EI",
+]
+
+scope_dg = st.sidebar.selectbox("DG Plants", SCOPE_OPTIONS, index=0, key="scope_dg")
+scope_import = st.sidebar.selectbox("Imported Coal Plants", SCOPE_OPTIONS, index=0, key="scope_import")
+scope_lignite = st.sidebar.selectbox("Lignite Plants", SCOPE_OPTIONS, index=0, key="scope_lignite")
+
+
 
 # ============================================================
 # FILE UPLOAD
@@ -204,6 +225,67 @@ def read_all_sheets(file):
 
 df_all_raw = read_all_sheets(uploaded)
 df_all = clean_ets_input(df_all_raw)
+
+# ============================================================
+# APPLY SCOPE FILTER (DROPS PLANTS FROM CALCULATION IF CHOSEN)
+# ============================================================
+def _fuel_group_of(ft: str) -> str:
+    s = str(ft).strip().lower()
+    # Match by keywords in sheet name / fuel labels
+    if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
+        return "DG"
+    if any(k in s for k in ["ithal", "import", "imported"]):
+        return "IMPORT_COAL"
+    if any(k in s for k in ["linyit", "lignite"]):
+        return "LIGNITE"
+    return "OTHER"
+
+def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
+    if option == "Include all plants":
+        return df, []
+    dfg = df[df["FuelType"].apply(_fuel_group_of) == group_code].copy()
+    if dfg.empty:
+        return df, []
+
+    # Emission Intensity (EI) = total emissions / total generation, per plant
+    agg = (
+        dfg.groupby("Plant", as_index=False)[["Emissions_tCO2", "Generation_MWh"]]
+        .sum()
+    )
+    agg["EI"] = agg["Emissions_tCO2"] / agg["Generation_MWh"].replace(0, np.nan)
+    agg = agg.dropna(subset=["EI"])
+
+    if agg.empty:
+        return df, []
+
+    asc = option == "Exclude 5 plants with LOWEST EI"
+    picks = agg.sort_values("EI", ascending=asc).head(n)["Plant"].tolist()
+
+    # Drop those plants ONLY within the selected fuel group
+    mask_group = df["FuelType"].apply(_fuel_group_of) == group_code
+    df2 = df[~(mask_group & df["Plant"].isin(picks))].copy()
+    return df2, picks
+
+df_scoped = df_all.copy()
+dropped = {"DG": [], "IMPORT_COAL": [], "LIGNITE": []}
+
+df_scoped, dropped["DG"] = _apply_scope(df_scoped, "DG", st.session_state.get("scope_dg", "Include all plants"))
+df_scoped, dropped["IMPORT_COAL"] = _apply_scope(df_scoped, "IMPORT_COAL", st.session_state.get("scope_import", "Include all plants"))
+df_scoped, dropped["LIGNITE"] = _apply_scope(df_scoped, "LIGNITE", st.session_state.get("scope_lignite", "Include all plants"))
+
+# Replace df_all used by the model (dropping plants is allowed per your request)
+df_all = df_scoped
+
+# Optional: show what was dropped (sidebar)
+if any(len(v) > 0 for v in dropped.values()):
+    st.sidebar.caption("Dropped plants (by scope):")
+    if dropped["DG"]:
+        st.sidebar.write("DG:", ", ".join(dropped["DG"]))
+    if dropped["IMPORT_COAL"]:
+        st.sidebar.write("Imported coal:", ", ".join(dropped["IMPORT_COAL"]))
+    if dropped["LIGNITE"]:
+        st.sidebar.write("Lignite:", ", ".join(dropped["LIGNITE"]))
+
 
 
 # ============================================================
