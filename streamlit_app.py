@@ -207,48 +207,62 @@ if st.button("Run ETS Model"):
     df_plot = df_plot.sort_values("TL_per_MWh")
 
     
-# IEA-style interactive infographic (Plotly)
-df_plot["Impact_Type"] = np.where(df_plot["TL_per_MWh"] >= 0, "Cost increase", "Cost reduction")
+    # IEA-style interactive infographic (Plotly)
+    df_plot["Impact_Type"] = np.where(
+        df_plot["TL_per_MWh"] >= 0,
+        "Cost increase",
+        "Cost reduction",
+    )
 
-# Focus view: show top N most affected plants for readability
-top_n = 30
-df_view = df_plot.copy()
-if len(df_view) > top_n:
-    # keep extremes by absolute value
-    df_view = df_view.reindex(df_view["TL_per_MWh"].abs().sort_values(ascending=False).head(top_n).index)
-    df_view = df_view.sort_values("TL_per_MWh")
+    # Focus view: show top N plants by absolute impact for readability
+    top_n = 30
+    df_view = df_plot.copy()
+    if len(df_view) > top_n:
+        df_view = df_view.reindex(
+            df_view["TL_per_MWh"].abs().sort_values(ascending=False).head(top_n).index
+        ).sort_values("TL_per_MWh")
 
-fig = px.bar(
-    df_view,
-    x="TL_per_MWh",
-    y="Plant",
-    orientation="h",
-    color="Impact_Type",
-    color_discrete_map={
-        "Cost increase": "#c0392b",
-        "Cost reduction": "#2980b9",
-    },
-    labels={"TL_per_MWh": "Net ETS impact (TL/MWh)", "Plant": "", "Impact_Type": ""},
-    title="Net ETS impact on electricity generation costs (TL/MWh)<br><sup>Most affected plants, sorted</sup>",
-)
+    fig = px.bar(
+        df_view,
+        x="TL_per_MWh",
+        y="Plant",
+        orientation="h",
+        color="Impact_Type",
+        color_discrete_map={
+            "Cost increase": "#c0392b",
+            "Cost reduction": "#2980b9",
+        },
+        labels={
+            "TL_per_MWh": "Net ETS impact (TL/MWh)",
+            "Plant": "",
+            "Impact_Type": "",
+        },
+        title="Net ETS impact on electricity generation costs (TL/MWh)<br><sup>Most affected plants, sorted</sup>",
+    )
 
-fig.update_layout(
-    template="simple_white",
-    height=750,
-    bargap=0.18,
-    title_x=0.01,
-    legend_orientation="h",
-    legend_y=1.08,
-    legend_x=0.01,
-    xaxis=dict(zeroline=True, zerolinecolor="black", gridcolor="rgba(0,0,0,0.06)"),
-    yaxis=dict(tickfont=dict(size=11)),
-)
-fig.update_traces(
-    hovertemplate="<b>%{y}</b><br>Net ETS impact: %{x:.1f} TL/MWh<extra></extra>"
-)
+    fig.update_layout(
+        template="simple_white",
+        height=750,
+        bargap=0.18,
+        title_x=0.01,
+        font=dict(family="Arial, sans-serif", size=13),
+        legend_orientation="h",
+        legend_y=1.08,
+        legend_x=0.01,
+        xaxis=dict(
+            zeroline=True,
+            zerolinecolor="black",
+            gridcolor="rgba(0,0,0,0.06)",
+            title="Net ETS impact (TL/MWh)",
+        ),
+        yaxis=dict(tickfont=dict(size=11), title=""),
+    )
 
-st.plotly_chart(fig, use_container_width=True)
+    fig.update_traces(
+        hovertemplate="<b>%{y}</b><br>Net ETS impact: %{x:.1f} TL/MWh<extra></extra>"
+    )
 
+    st.plotly_chart(fig, use_container_width=True)
     # ========================================================
     # RAW TABLE
     # ========================================================
