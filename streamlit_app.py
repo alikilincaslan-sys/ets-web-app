@@ -26,8 +26,8 @@ from data_cleaning import clean_ets_input, filter_intensity_outliers_by_fuel
 # DEFAULTS
 # ============================================================
 DEFAULTS = {
-    "price_range": (5, 20),
-    "agk": 1.00,
+    "price_range": (1, 15),
+    "agk": 0.50,
     "benchmark_top_pct": 100,
     "price_method": "Market Clearing",
     "slope_bid": 150,
@@ -41,7 +41,7 @@ DEFAULTS = {
 }
 
 st.set_page_config(
-    page_title="ETS Geliştirme Modülü V001",
+    page_title="ETS Geliştirme Modülü V002",
     layout="wide"
 )
 
@@ -157,6 +157,14 @@ trf = st.sidebar.slider(
          "TRF=0 → telafi yok; TRF=1 → (I−B) farkının tamamı telafi edilir (sadece I>B olan tesisler için)."
 )
 
+# FIX: UI'daki Türkçe seçimi, ets_model.ets_hesapla'nın beklediği koda çevir
+BENCHMARK_METHOD_MAP = {
+    "Üretim ağırlıklı benchmark": "generation_weighted",
+    "Kurulu güç ağırlıklı benchmark": "capacity_weighted",
+    "En iyi tesis dilimi (üretim payı)": "best_plants",
+}
+benchmark_method_code = BENCHMARK_METHOD_MAP.get(benchmark_method, "best_plants")
+
 
 # ============================================================
 # FILE UPLOAD
@@ -194,7 +202,7 @@ if st.button("Run ETS Model"):
         slope_bid=slope_bid,
         slope_ask=slope_ask,
         spread=spread,
-        benchmark_method=benchmark_method_code,
+        benchmark_method=benchmark_method_code,   # FIX: artık tanımlı
         benchmark_top_pct=int(benchmark_top_pct),
         cap_col="InstalledCapacity_MW",
         price_method=price_method,
@@ -233,7 +241,6 @@ if st.button("Run ETS Model"):
     df_plot["TL_per_MWh"] = df_plot["ets_net_cashflow_€/MWh"] * fx_rate
     df_plot = df_plot.sort_values("TL_per_MWh")
 
-    
     # IEA-style interactive infographic (Plotly)
     df_plot["Impact_Type"] = np.where(
         df_plot["TL_per_MWh"] >= 0,
@@ -290,6 +297,7 @@ if st.button("Run ETS Model"):
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
     # ========================================================
     # RAW TABLE
     # ========================================================
