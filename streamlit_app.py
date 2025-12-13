@@ -28,7 +28,7 @@ st.title("ETS Development Module – Policy Dashboard")
 st.markdown("""
 <style>
 .kpi {
-    background: #ffffff;
+    background: rgba(255,255,255,0.92);
     border-radius: 14px;
     padding: 14px;
     border: 1px solid rgba(0,0,0,0.10);
