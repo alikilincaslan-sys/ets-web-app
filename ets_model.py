@@ -45,12 +45,10 @@ def _compute_benchmark_top_percent(subset: pd.DataFrame, top_pct: int) -> float:
     return float(chosen["Emissions_tCO2"].sum() / chosen["Generation_MWh"].sum())
 
 
-
 def _compute_benchmark_generation_weighted(subset: pd.DataFrame) -> float:
     """Benchmark = yakıt grubunun üretim-ağırlıklı yoğunluğu = sum(E)/sum(G)."""
     if subset.empty:
         return np.nan
-
     sub = subset.copy()
     sub["Generation_MWh"] = pd.to_numeric(sub["Generation_MWh"], errors="coerce")
     sub["Emissions_tCO2"] = pd.to_numeric(sub["Emissions_tCO2"], errors="coerce")
@@ -58,7 +56,6 @@ def _compute_benchmark_generation_weighted(subset: pd.DataFrame) -> float:
     sub = sub[(sub["Generation_MWh"] > 0) & (sub["Emissions_tCO2"] >= 0)]
     if sub.empty:
         return np.nan
-
     return float(sub["Emissions_tCO2"].sum() / sub["Generation_MWh"].sum())
 
 
@@ -66,21 +63,22 @@ def _compute_benchmark_capacity_weighted(subset: pd.DataFrame, cap_col: str = "I
     """Benchmark = yakıt grubunun kurulu güç-ağırlıklı yoğunluğu = sum(intensity*Cap)/sum(Cap)."""
     if subset.empty:
         return np.nan
-
     sub = subset.copy()
     sub["Generation_MWh"] = pd.to_numeric(sub["Generation_MWh"], errors="coerce")
     sub["Emissions_tCO2"] = pd.to_numeric(sub["Emissions_tCO2"], errors="coerce")
     if cap_col not in sub.columns:
         raise ValueError(f"Kurulu güç ağırlıklı benchmark için Excel kolon eksik: {cap_col}")
     sub[cap_col] = pd.to_numeric(sub[cap_col], errors="coerce")
-
     sub = sub.dropna(subset=["Generation_MWh", "Emissions_tCO2", cap_col])
     sub = sub[(sub["Generation_MWh"] > 0) & (sub["Emissions_tCO2"] >= 0) & (sub[cap_col] > 0)]
     if sub.empty:
         return np.nan
-
     sub["intensity"] = sub["Emissions_tCO2"] / sub["Generation_MWh"]
-    return float(np.average(sub["intensity"].to_numpy(), weights=sub[cap_col].to_numpy()))
+    w = sub[cap_col].to_numpy()
+    denom = float(np.sum(w))
+    if denom <= 0:
+        return np.nan
+    return float(np.sum(sub["intensity"].to_numpy() * w) / denom)
 
 
 def _compute_benchmarks(
@@ -89,22 +87,12 @@ def _compute_benchmarks(
     benchmark_top_pct: int = 100,
     cap_col: str = "InstalledCapacity_MW",
 ) -> dict:
-    """Yakıt bazında benchmark (B_fuel).
-
-    benchmark_method:
-      - "generation_weighted": yakıt grubunun üretim-ağırlıklı ortalaması
-      - "capacity_weighted": yakıt grubunun kurulu güç-ağırlıklı ortalaması (cap_col gerekir)
-      - "best_plants": intensity düşük olan en iyi dilim (production-share based, benchmark_top_pct)
-
-    Not: AGK bu benchmark değerine sonradan uygulanır; benchmark yöntemi AGK'yi değiştirmez.
-    """
+    """Yakıt bazında benchmark (B_fuel). Yönteme göre hesaplanır."""
     bench = {}
-    method = (benchmark_method or "best_plants").strip().lower()
-
     for ft, g in df.groupby("FuelType"):
-        if method == "generation_weighted":
+        if benchmark_method == "generation_weighted":
             bench[ft] = _compute_benchmark_generation_weighted(g)
-        elif method == "capacity_weighted":
+        elif benchmark_method == "capacity_weighted":
             bench[ft] = _compute_benchmark_capacity_weighted(g, cap_col=cap_col)
         else:  # "best_plants"
             bench[ft] = _compute_benchmark_top_percent(g, int(benchmark_top_pct))
@@ -212,6 +200,8 @@ def ets_hesapla(
     slope_bid: float = 150,
     slope_ask: float = 150,
     spread: float = 0.0,
+    benchmark_method: str = "best_plants",
+    cap_col: str = "InstalledCapacity_MW",
     benchmark_top_pct: int = 100,
     free_alloc_share: float = 100.0,
     trf: float = 0.0,
@@ -226,11 +216,8 @@ def ets_hesapla(
       T_i = I_i + AGK * (B_fuel - I_i)
 
     Benchmark:
-      benchmark_method:
-        - generation_weighted  => yakıt grubunun üretim-ağırlıklı ortalaması
-        - capacity_weighted    => yakıt grubunun kurulu güç-ağırlıklı ortalaması (cap_col gerekir)
-        - best_plants          => en iyi production-share dilimi (benchmark_top_pct)
-      benchmark_top_pct sadece best_plants için kullanılır.
+      benchmark_top_pct=10 => en iyi %10 üretim dilimi
+      benchmark_top_pct=100 => tüm tesisler
 
     TRF (Geçiş Dönemi Telafi Katsayısı):
       İlave tahsis = max(0, I_i - B_fuel) * G_i * TRF
