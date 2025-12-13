@@ -192,6 +192,43 @@ def _average_compliance_cost_price(df: pd.DataFrame, price_min: float, price_max
     return float(np.clip(acc, price_min, price_max))
 
 
+
+
+def _auction_clearing_price(df: pd.DataFrame, price_min: float, price_max: float, auction_supply_share: float = 100.0) -> float:
+    """
+    Simple allowance auction clearing (year-end compliance demand is quantity-fixed).
+
+    - Demand quantity: sum of positive net_ets (tCO2) across plants
+    - Each plant bids at p_bid for its needed quantity
+    - Supply quantity: auction_supply_share (%) of total demand
+    - Clearing price: p_bid of the marginal (last winning) bidder
+      If supply >= demand -> price_min (oversupply; clears at floor)
+    """
+    buyers = df[df["net_ets"] > 0].copy()
+    if buyers.empty:
+        return float(price_min)
+
+    demand_qty = float(buyers["net_ets"].sum())
+    if demand_qty <= 0:
+        return float(price_min)
+
+    supply_qty = demand_qty * float(auction_supply_share) / 100.0
+
+    # Oversupply -> clears at floor
+    if supply_qty >= demand_qty:
+        return float(price_min)
+
+    buyers = buyers.sort_values("p_bid", ascending=False)
+    buyers["cum_qty"] = buyers["net_ets"].cumsum()
+
+    marginal = buyers[buyers["cum_qty"] >= supply_qty].head(1)
+    if marginal.empty:
+        # Numerical edge case
+        return float(price_max)
+
+    p = float(marginal["p_bid"].iloc[0])
+    return float(np.clip(p, price_min, price_max))
+
 def ets_hesapla(
     df: pd.DataFrame,
     price_min: float,
@@ -204,6 +241,7 @@ def ets_hesapla(
     cap_col: str = "InstalledCapacity_MW",
     benchmark_top_pct: int = 100,
     free_alloc_share: float = 100.0,
+    auction_supply_share: float = 100.0,
     trf: float = 0.0,
     price_method: str = "Market Clearing",  # ✅ yeni
 ):
@@ -225,6 +263,7 @@ def ets_hesapla(
     Price method:
       - "Market Clearing"
       - "Average Compliance Cost"
+      - "Auction Clearing"
     """
     required = ["Plant", "FuelType", "Emissions_tCO2", "Generation_MWh"]
     for c in required:
@@ -272,6 +311,8 @@ def ets_hesapla(
     # 7) Price
     if price_method == "Average Compliance Cost":
         clearing_price = _average_compliance_cost_price(x, price_min, price_max)
+    elif price_method == "Auction Clearing":
+        clearing_price = _auction_clearing_price(x, price_min, price_max, auction_supply_share=auction_supply_share)
     else:
         clearing_price = _market_clearing_price(x, price_min, price_max, step=1.0)
 
