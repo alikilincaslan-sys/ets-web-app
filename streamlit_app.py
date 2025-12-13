@@ -71,10 +71,11 @@ st.markdown("""
     margin-bottom: 4px;
   }
   .kpi .value {
-    font-size: 1.35rem;
-    font-weight: 700;
+    font-size: 1.30rem;
+    font-weight: 750;
     color: rgba(0,0,0,0.90);
     line-height: 1.15;
+    word-break: break-word;
   }
   .kpi .sub {
     font-size: 0.75rem;
@@ -231,6 +232,7 @@ if st.button("Run ETS Model"):
     # INFOGRAPHIC KPI ROW
     # ========================================================
     total_gen = df_all["Generation_MWh"].sum()
+    total_capacity = df_all["InstalledCapacity_MW"].sum()
     total_emis = df_all["Emissions_tCO2"].sum() / 1e6
 
     if "ets_net_cashflow_€/MWh" in sonuc_df.columns:
@@ -241,12 +243,25 @@ if st.button("Run ETS Model"):
     else:
         avg_tl_mwh = np.nan
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: kpi_card("Total Generation", f"{total_gen:,.0f} MWh", "2024")
-    with c2: kpi_card("Total Emissions", f"{total_emis:,.2f} MtCO₂", "2024")
-    with c3: kpi_card("Carbon Price", f"{clearing_price:.2f} €/tCO₂", price_method)
-    with c4: kpi_card("FX Rate", f"{fx_rate:.0f} TL/€", "Scenario")
-    with c5: kpi_card("Avg ETS Impact", f"{avg_tl_mwh:,.2f} TL/MWh", "Gen.-weighted")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+    with c1:
+        kpi_card("Electricity Generation", f"{total_gen:,.0f} MWh", "2024")
+
+    with c2:
+        kpi_card("Installed Capacity (KG)", f"{total_capacity:,.0f} MW", "Toplam")
+
+    with c3:
+        kpi_card("Total Emissions", f"{total_emis:,.2f} MtCO₂", "2024")
+
+    with c4:
+        kpi_card("Carbon Price", f"{clearing_price:.2f} €/tCO₂", price_method)
+
+    with c5:
+        kpi_card("FX Rate", f"{fx_rate:.0f} TL/€", "Scenario")
+
+    with c6:
+        kpi_card("Avg ETS Impact", f"{avg_tl_mwh:,.2f} TL/MWh", "Gen.-weighted")
 
     # ========================================================
     # INFOGRAPHIC – SINGLE CLEAN CHART
