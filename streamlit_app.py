@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import plotly.express as px
+import plotly.graph_objects as go
 
 from datetime import datetime
 from io import BytesIO
@@ -342,7 +343,7 @@ if st.button("Run ETS Model"):
         kpi_card("Avg ETS Impact", f"{avg_tl_mwh:,.2f} TL/MWh", "Gen.-weighted")
 
     # ========================================================
-    # IEA VISUALS – Market Summary / Bid-Ask / Benchmark Distribution
+    # IEA VISUALS – Market Summary / Price Formation / Bid-Ask / Benchmark Distribution
     # ========================================================
     st.subheader("IEA-style market visuals")
 
@@ -370,6 +371,140 @@ if st.button("Run ETS Model"):
         kpi_card("Shortage", f"{shortage_tco2:,.0f} tCO₂", f"{shortage_pct:.1f}% of demand")
 
     st.caption("Note: In Auction Clearing, demand is assumed inelastic and supply is set as a share of total compliance demand.")
+
+
+    # ---------- NEW: Price formation chart (method-specific, X = allowances) ----------
+    def _demand_at_price(buyers_df: pd.DataFrame, p: float, pmin: float) -> float:
+        if buyers_df.empty:
+            return 0.0
+        q0 = buyers_df["net_ets"].to_numpy(dtype=float)
+        p_bid = buyers_df["p_bid"].to_numpy(dtype=float)
+        denom = np.maximum(p_bid - pmin, 1e-9)
+        frac = 1.0 - (p - pmin) / denom
+        return float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
+
+    def _supply_at_price(sellers_df: pd.DataFrame, p: float, pmax: float) -> float:
+        if sellers_df.empty:
+            return 0.0
+        q0 = (-sellers_df["net_ets"]).to_numpy(dtype=float)  # supply quantity
+        p_ask = sellers_df["p_ask"].to_numpy(dtype=float)
+        denom = np.maximum(pmax - p_ask, 1e-9)
+        frac = (p - p_ask) / denom
+        return float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
+
+    with st.expander("Price formation (how the carbon price is formed)", expanded=True):
+        buyers = sonuc_df.loc[sonuc_df["net_ets"] > 0, ["net_ets", "p_bid"]].copy()
+        sellers = sonuc_df.loc[sonuc_df["net_ets"] < 0, ["net_ets", "p_ask"]].copy()
+
+        fig_pf = go.Figure()
+
+        if price_method == "Market Clearing":
+            # Step-like inverse curves (context)
+            if not buyers.empty:
+                b = buyers.sort_values("p_bid", ascending=False).copy()
+                b["cum_q"] = b["net_ets"].cumsum()
+                fig_pf.add_trace(go.Scatter(
+                    x=b["cum_q"], y=b["p_bid"],
+                    mode="lines", name="Demand curve (bids)"
+                ))
+
+            if not sellers.empty:
+                s = sellers.sort_values("p_ask", ascending=True).copy()
+                s["supply_q"] = (-s["net_ets"]).astype(float)
+                s["cum_q"] = s["supply_q"].cumsum()
+                fig_pf.add_trace(go.Scatter(
+                    x=s["cum_q"], y=s["p_ask"],
+                    mode="lines", name="Supply curve (asks)"
+                ))
+
+            # Intersection markers using continuous activation logic
+            qd = _demand_at_price(buyers, float(clearing_price), float(price_min))
+            qs = _supply_at_price(sellers, float(clearing_price), float(price_max))
+            q_star = float(min(qd, qs))
+
+            fig_pf.add_hline(
+                y=float(clearing_price),
+                line_dash="dash",
+                annotation_text=f"Clearing price: {clearing_price:.2f} €/tCO₂",
+                annotation_position="top left",
+            )
+            fig_pf.add_vline(
+                x=q_star,
+                line_dash="dash",
+                annotation_text=f"Traded volume: {q_star:,.0f} tCO₂",
+                annotation_position="top right",
+            )
+
+            subtitle = "Market Clearing: price is where available supply meets compliance demand (intersection)."
+
+        elif price_method == "Auction Clearing":
+            if buyers.empty:
+                st.info("No buyers (net_ets > 0) in the current scope — cannot draw auction price formation.")
+                subtitle = "Auction Clearing: insufficient buyers in current scope."
+            else:
+                demand = float(buyers["net_ets"].sum())
+                supply = float(demand * float(auction_supply_share))
+
+                b = buyers.sort_values("p_bid", ascending=False).copy()
+                b["cum_q"] = b["net_ets"].cumsum()
+
+                fig_pf.add_trace(go.Scatter(
+                    x=b["cum_q"], y=b["p_bid"],
+                    mode="lines", name="Bid stack (descending bids)"
+                ))
+
+                fig_pf.add_vline(
+                    x=supply,
+                    line_dash="dash",
+                    annotation_text=f"Auction supply: {supply:,.0f} tCO₂",
+                    annotation_position="top right",
+                )
+                fig_pf.add_hline(
+                    y=float(clearing_price),
+                    line_dash="dash",
+                    annotation_text=f"Clearing price: {clearing_price:.2f} €/tCO₂",
+                    annotation_position="top left",
+                )
+
+                subtitle = "Auction Clearing: fixed supply is sold to highest bids; marginal winning bid sets the price."
+
+        else:  # Average Compliance Cost
+            if buyers.empty:
+                st.info("No buyers (net_ets > 0) in the current scope — cannot draw ACC price formation.")
+                subtitle = "Average Compliance Cost: insufficient buyers in current scope."
+            else:
+                b = buyers.sort_values("p_bid", ascending=False).copy()
+                b["cum_q"] = b["net_ets"].cumsum()
+
+                fig_pf.add_trace(go.Scatter(
+                    x=b["cum_q"], y=b["p_bid"],
+                    mode="lines", name="Bid stack (buyers)"
+                ))
+                fig_pf.add_hline(
+                    y=float(clearing_price),
+                    line_dash="dash",
+                    annotation_text=f"ACC price: {clearing_price:.2f} €/tCO₂",
+                    annotation_position="top left",
+                )
+
+                subtitle = "Average Compliance Cost: price is the demand-weighted average of buyers’ bids (no strict intersection)."
+
+        fig_pf.update_layout(
+            template="simple_white",
+            height=460,
+            margin=dict(l=10, r=10, t=40, b=10),
+            legend_orientation="h",
+            legend_y=1.08,
+            legend_x=0.01,
+            xaxis_title="Allowances (tCO₂)",
+            yaxis_title="Price (€/tCO₂)",
+        )
+        fig_pf.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+        fig_pf.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+
+        st.plotly_chart(fig_pf, use_container_width=True)
+        st.caption(subtitle)
+
 
     # ---------- 2) Bid–Ask curves + clearing price ----------
     with st.expander("Bid–Ask curves and clearing price", expanded=True):
@@ -465,7 +600,6 @@ if st.button("Run ETS Model"):
 
             st.plotly_chart(fig_box, use_container_width=True)
 
-            # ✅ AÇIKLAMA (DOĞRU YER)
             st.caption(
                 "How to read: Each box shows the distribution of plant-level emission intensities (tCO₂/MWh) within a fuel group. "
                 "The line inside the box is the median; the box spans the 25th–75th percentiles; dots are individual plants "
