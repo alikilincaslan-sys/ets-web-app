@@ -51,7 +51,6 @@ st.title("ETS Geliştirme Modülü v002")
 # ============================================================
 # INFOGRAPHIC CSS
 # ============================================================
-
 st.markdown("""
 <style>
   .kpi {
@@ -143,7 +142,6 @@ if benchmark_method == "En iyi tesis dilimi (üretim payı)":
         help="Yakıt grubu içinde intensity düşük olanlardan başlayarak toplam üretimin belirtilen yüzdesine kadar olan dilim seçilir; benchmark bu dilimin üretim-ağırlıklı ortalamasıdır.",
     )
 else:
-    # Diğer yöntemlerde bu parametre kullanılmaz; raporda şeffaflık için 100 tutulur
     st.session_state["benchmark_top_pct"] = 100
     benchmark_top_pct = 100
 
@@ -214,7 +212,6 @@ scope_import = st.sidebar.selectbox("Imported Coal Plants", SCOPE_OPTIONS, index
 scope_lignite = st.sidebar.selectbox("Lignite Plants", SCOPE_OPTIONS, index=0, key="scope_lignite")
 
 
-
 # ============================================================
 # FILE UPLOAD
 # ============================================================
@@ -222,7 +219,6 @@ uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["x
 if uploaded is None:
     st.info("Lütfen Excel dosyası yükleyin.")
     st.stop()
-
 
 def read_all_sheets(file):
     xls = pd.ExcelFile(file)
@@ -232,7 +228,6 @@ def read_all_sheets(file):
         df["FuelType"] = sh
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
-
 
 df_all_raw = read_all_sheets(uploaded)
 df_all = clean_ets_input(df_all_raw)
@@ -293,7 +288,6 @@ if any(len(v) > 0 for v in dropped.values()):
         st.sidebar.write("Lignite:", ", ".join(dropped["LIGNITE"]))
 
 
-
 # ============================================================
 # RUN MODEL
 # ============================================================
@@ -336,22 +330,16 @@ if st.button("Run ETS Model"):
 
     with c1:
         kpi_card("Electricity Generation", f"{total_gen:,.0f} MWh", "2024")
-
     with c2:
         kpi_card("Installed Capacity (KG)", f"{total_capacity:,.0f} MW", "Toplam")
-
     with c3:
         kpi_card("Total Emissions", f"{total_emis:,.2f} MtCO₂", "2024")
-
     with c4:
         kpi_card("Carbon Price", f"{clearing_price:.2f} €/tCO₂", price_method)
-
     with c5:
         kpi_card("FX Rate", f"{fx_rate:.0f} TL/€", "Scenario")
-
     with c6:
         kpi_card("Avg ETS Impact", f"{avg_tl_mwh:,.2f} TL/MWh", "Gen.-weighted")
-
 
     # ========================================================
     # IEA VISUALS – Market Summary / Bid-Ask / Benchmark Distribution
@@ -476,51 +464,16 @@ if st.button("Run ETS Model"):
                     )
 
             st.plotly_chart(fig_box, use_container_width=True)
-            with st.expander("Emission intensity distribution vs benchmark (by fuel)", expanded=True):
-    if "intensity" not in sonuc_df.columns:
-        st.warning("Model output does not contain 'intensity' column — cannot draw distribution.")
-    else:
-        fig_box = px.box(
-            sonuc_df,
-            x="FuelType",
-            y="intensity",
-            points="all",
-            template="simple_white",
-            labels={"FuelType": "", "intensity": "tCO₂ / MWh"},
-        )
-        fig_box.update_layout(
-            height=520,
-            margin=dict(l=10, r=10, t=40, b=10),
-            showlegend=False,
-        )
-        fig_box.update_xaxes(showgrid=False)
-        fig_box.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
 
-        for fuel, b in (benchmark_map or {}).items():
-            try:
-                b_val = float(b)
-            except Exception:
-                continue
-            if np.isfinite(b_val):
-                fig_box.add_hline(
-                    y=b_val,
-                    line_dash="dash",
-                    line_color="black",
-                    opacity=0.55,
-                    annotation_text=f"{fuel} benchmark",
-                    annotation_position="top left",
-                )
-
-        st.plotly_chart(fig_box, use_container_width=True)
-
-        # ✅ AÇIKLAMA (BURAYA)
-        st.caption(
-            "How to read: Each box shows the distribution of plant-level emission intensities (tCO₂/MWh) within a fuel group. "
-            "The line inside the box is the median; the box spans the 25th–75th percentiles; dots are individual plants (outliers may appear as isolated points). "
-            "The dashed horizontal line is the fuel-specific benchmark (B_fuel). "
-            "Plants above the benchmark are net buyers (higher ETS cost), while plants below the benchmark are net sellers (potential surplus)."
-        )
-
+            # ✅ AÇIKLAMA (DOĞRU YER)
+            st.caption(
+                "How to read: Each box shows the distribution of plant-level emission intensities (tCO₂/MWh) within a fuel group. "
+                "The line inside the box is the median; the box spans the 25th–75th percentiles; dots are individual plants "
+                "(outliers may appear as isolated points). "
+                "The dashed horizontal line is the fuel-specific benchmark (B_fuel). "
+                "Plants above the benchmark are net buyers (higher ETS cost), while plants below the benchmark are net sellers "
+                "(potential surplus)."
+            )
 
     st.divider()
 
