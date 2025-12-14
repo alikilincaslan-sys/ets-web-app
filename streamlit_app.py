@@ -203,11 +203,6 @@ benchmark_method_code = BENCHMARK_METHOD_MAP.get(benchmark_method, "best_plants"
 # ============================================================
 st.sidebar.subheader("Benchmark scope (by fuel)")
 
-# Option meanings:
-# 1) Include all plants
-# 2) Exclude 5 plants with LOWEST emission intensity (EI)
-# 3) Exclude 5 plants with HIGHEST emission intensity (EI)
-
 SCOPE_OPTIONS = [
     "Include all plants",
     "Exclude 5 plants with LOWEST EI",
@@ -247,7 +242,6 @@ df_all = clean_ets_input(df_all_raw)
 # ============================================================
 def _fuel_group_of(ft: str) -> str:
     s = str(ft).strip().lower()
-    # Match by keywords in sheet name / fuel labels
     if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
         return "DG"
     if any(k in s for k in ["ithal", "import", "imported"]):
@@ -263,7 +257,6 @@ def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
     if dfg.empty:
         return df, []
 
-    # Emission Intensity (EI) = total emissions / total generation, per plant
     agg = (
         dfg.groupby("Plant", as_index=False)[["Emissions_tCO2", "Generation_MWh"]]
         .sum()
@@ -277,7 +270,6 @@ def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
     asc = option == "Exclude 5 plants with LOWEST EI"
     picks = agg.sort_values("EI", ascending=asc).head(n)["Plant"].tolist()
 
-    # Drop those plants ONLY within the selected fuel group
     mask_group = df["FuelType"].apply(_fuel_group_of) == group_code
     df2 = df[~(mask_group & df["Plant"].isin(picks))].copy()
     return df2, picks
@@ -289,10 +281,8 @@ df_scoped, dropped["DG"] = _apply_scope(df_scoped, "DG", st.session_state.get("s
 df_scoped, dropped["IMPORT_COAL"] = _apply_scope(df_scoped, "IMPORT_COAL", st.session_state.get("scope_import", "Include all plants"))
 df_scoped, dropped["LIGNITE"] = _apply_scope(df_scoped, "LIGNITE", st.session_state.get("scope_lignite", "Include all plants"))
 
-# Replace df_all used by the model (dropping plants is allowed per your request)
 df_all = df_scoped
 
-# Optional: show what was dropped (sidebar)
 if any(len(v) > 0 for v in dropped.values()):
     st.sidebar.caption("Dropped plants (by scope):")
     if dropped["DG"]:
@@ -317,12 +307,12 @@ if st.button("Run ETS Model"):
         slope_bid=slope_bid,
         slope_ask=slope_ask,
         spread=spread,
-        benchmark_method=benchmark_method_code,   # FIX: artık tanımlı
+        benchmark_method=benchmark_method_code,
         benchmark_top_pct=int(benchmark_top_pct),
         cap_col="InstalledCapacity_MW",
         price_method=price_method,
         trf=float(trf),
-        auction_supply_share=float(auction_supply_share),  # ADD
+        auction_supply_share=float(auction_supply_share),
     )
 
     st.success(f"Carbon Price: {clearing_price:.2f} €/tCO₂")
@@ -362,6 +352,134 @@ if st.button("Run ETS Model"):
     with c6:
         kpi_card("Avg ETS Impact", f"{avg_tl_mwh:,.2f} TL/MWh", "Gen.-weighted")
 
+
+    # ========================================================
+    # IEA VISUALS – Market Summary / Bid-Ask / Benchmark Distribution
+    # ========================================================
+    st.subheader("IEA-style market visuals")
+
+    # ---------- 1) Market summary cards ----------
+    demand_tco2 = float(sonuc_df.loc[sonuc_df["net_ets"] > 0, "net_ets"].sum())
+    if price_method == "Auction Clearing":
+        supply_tco2 = demand_tco2 * float(auction_supply_share)
+        supply_label = "Auction supply"
+    else:
+        supply_tco2 = float((-sonuc_df.loc[sonuc_df["net_ets"] < 0, "net_ets"]).sum())
+        supply_label = "Available supply (surplus)"
+
+    traded_tco2 = float(min(demand_tco2, supply_tco2)) if (demand_tco2 > 0 and supply_tco2 > 0) else 0.0
+    shortage_tco2 = float(max(demand_tco2 - supply_tco2, 0.0))
+    shortage_pct = (shortage_tco2 / demand_tco2 * 100.0) if demand_tco2 > 0 else 0.0
+
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        kpi_card("Compliance demand", f"{demand_tco2:,.0f} tCO₂", "Σ(net_ets > 0)")
+    with s2:
+        kpi_card(supply_label, f"{supply_tco2:,.0f} tCO₂", "Policy / surplus based")
+    with s3:
+        kpi_card("Traded volume", f"{traded_tco2:,.0f} tCO₂", "min(demand, supply)")
+    with s4:
+        kpi_card("Shortage", f"{shortage_tco2:,.0f} tCO₂", f"{shortage_pct:.1f}% of demand")
+
+    st.caption("Note: In Auction Clearing, demand is assumed inelastic and supply is set as a share of total compliance demand.")
+
+    # ---------- 2) Bid–Ask curves + clearing price ----------
+    with st.expander("Bid–Ask curves and clearing price", expanded=True):
+        buyers = sonuc_df.loc[sonuc_df["net_ets"] > 0, ["net_ets", "p_bid"]].copy()
+        sellers = sonuc_df.loc[sonuc_df["net_ets"] < 0, ["net_ets", "p_ask"]].copy()
+
+        if buyers.empty:
+            st.info("No buyers (net_ets > 0) in the current scope — bid curve not available.")
+        else:
+            buyers = buyers.sort_values("p_bid", ascending=True)
+            buyers["cum_q"] = buyers["net_ets"].cumsum()
+
+            fig_curves = px.line(
+                buyers,
+                x="cum_q",
+                y="p_bid",
+                template="simple_white",
+                labels={"cum_q": "Allowances (tCO₂)", "p_bid": "Price (€/tCO₂)"},
+            )
+            fig_curves.update_traces(name="Demand (bids)", line=dict(color="#1f77b4"))
+
+            if not sellers.empty:
+                sellers = sellers.sort_values("p_ask", ascending=True)
+                sellers["supply_q"] = (-sellers["net_ets"]).astype(float)
+                sellers["cum_q"] = sellers["supply_q"].cumsum()
+
+                fig_s = px.line(
+                    sellers,
+                    x="cum_q",
+                    y="p_ask",
+                    template="simple_white",
+                    labels={"cum_q": "Allowances (tCO₂)", "p_ask": "Price (€/tCO₂)"},
+                )
+                fig_s.update_traces(name="Supply (asks)", line=dict(color="#d62728"))
+                for tr in fig_s.data:
+                    fig_curves.add_trace(tr)
+
+            fig_curves.add_hline(
+                y=float(clearing_price),
+                line_dash="dash",
+                line_color="black",
+                annotation_text=f"Clearing: {clearing_price:.2f} €/tCO₂",
+                annotation_position="top left",
+            )
+
+            fig_curves.update_layout(
+                height=420,
+                legend_orientation="h",
+                legend_y=1.08,
+                legend_x=0.01,
+                margin=dict(l=10, r=10, t=40, b=10),
+            )
+            fig_curves.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+            fig_curves.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+
+            st.plotly_chart(fig_curves, use_container_width=True)
+
+    # ---------- 3) Fuel-wise intensity distribution + benchmark ----------
+    with st.expander("Emission intensity distribution vs benchmark (by fuel)", expanded=True):
+        if "intensity" not in sonuc_df.columns:
+            st.warning("Model output does not contain 'intensity' column — cannot draw distribution.")
+        else:
+            fig_box = px.box(
+                sonuc_df,
+                x="FuelType",
+                y="intensity",
+                points="all",
+                template="simple_white",
+                labels={"FuelType": "", "intensity": "tCO₂ / MWh"},
+            )
+            fig_box.update_layout(
+                height=520,
+                margin=dict(l=10, r=10, t=40, b=10),
+                showlegend=False,
+            )
+            fig_box.update_xaxes(showgrid=False)
+            fig_box.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+
+            for fuel, b in (benchmark_map or {}).items():
+                try:
+                    b_val = float(b)
+                except Exception:
+                    continue
+                if np.isfinite(b_val):
+                    fig_box.add_hline(
+                        y=b_val,
+                        line_dash="dash",
+                        line_color="black",
+                        opacity=0.55,
+                        annotation_text=f"{fuel} benchmark",
+                        annotation_position="top left",
+                    )
+
+            st.plotly_chart(fig_box, use_container_width=True)
+
+    st.divider()
+
+
     # ========================================================
     # INFOGRAPHIC – SINGLE CLEAN CHART
     # ========================================================
@@ -371,14 +489,12 @@ if st.button("Run ETS Model"):
     df_plot["TL_per_MWh"] = df_plot["ets_net_cashflow_€/MWh"] * fx_rate
     df_plot = df_plot.sort_values("TL_per_MWh")
 
-    # IEA-style interactive infographic (Plotly)
     df_plot["Impact_Type"] = np.where(
         df_plot["TL_per_MWh"] >= 0,
         "Cost increase",
         "Cost reduction",
     )
 
-    # Focus view: show top N plants by absolute impact for readability
     top_n = 30
     df_view = df_plot.copy()
     if len(df_view) > top_n:
