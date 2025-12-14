@@ -476,9 +476,53 @@ if st.button("Run ETS Model"):
                     )
 
             st.plotly_chart(fig_box, use_container_width=True)
+            with st.expander("Emission intensity distribution vs benchmark (by fuel)", expanded=True):
+    if "intensity" not in sonuc_df.columns:
+        st.warning("Model output does not contain 'intensity' column — cannot draw distribution.")
+    else:
+        fig_box = px.box(
+            sonuc_df,
+            x="FuelType",
+            y="intensity",
+            points="all",
+            template="simple_white",
+            labels={"FuelType": "", "intensity": "tCO₂ / MWh"},
+        )
+        fig_box.update_layout(
+            height=520,
+            margin=dict(l=10, r=10, t=40, b=10),
+            showlegend=False,
+        )
+        fig_box.update_xaxes(showgrid=False)
+        fig_box.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+
+        for fuel, b in (benchmark_map or {}).items():
+            try:
+                b_val = float(b)
+            except Exception:
+                continue
+            if np.isfinite(b_val):
+                fig_box.add_hline(
+                    y=b_val,
+                    line_dash="dash",
+                    line_color="black",
+                    opacity=0.55,
+                    annotation_text=f"{fuel} benchmark",
+                    annotation_position="top left",
+                )
+
+        st.plotly_chart(fig_box, use_container_width=True)
+
+        # ✅ AÇIKLAMA (BURAYA)
+        st.caption(
+            "How to read: Each box shows the distribution of plant-level emission intensities (tCO₂/MWh) within a fuel group. "
+            "The line inside the box is the median; the box spans the 25th–75th percentiles; dots are individual plants (outliers may appear as isolated points). "
+            "The dashed horizontal line is the fuel-specific benchmark (B_fuel). "
+            "Plants above the benchmark are net buyers (higher ETS cost), while plants below the benchmark are net sellers (potential surplus)."
+        )
+
 
     st.divider()
-
 
     # ========================================================
     # INFOGRAPHIC – SINGLE CLEAN CHART
