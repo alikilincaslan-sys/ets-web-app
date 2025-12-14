@@ -108,24 +108,43 @@ def _build_bid_ask(
     spread: float,
 ) -> pd.DataFrame:
     """
-    Basit BID/ASK üretimi:
-    - intensity > B => daha "kirli" => p_bid yukarı
-    - intensity < B => daha "temiz" => p_ask aşağı
+    ✅ SOFT MAPPING (Option A):
+    Hard clip yerine yumuşak doyum:
+      f(z) = 1 - exp(-k*z)   (z>=0)
+
+    - delta = intensity - B_fuel
+    - "kirli" (delta>0) => p_bid artar (price_max'a yaklaşır, yapışmaz)
+    - "temiz" (delta<0) => p_ask düşer (price_min'e yaklaşır, yapışmaz)
+
+    slope_bid / slope_ask artık "doyum hızı" gibi davranır.
+    Eski lineer yaklaşımın ölçeğini korumak için:
+      k ≈ slope / (price_max - price_min)
     """
     out = df.copy()
     delta = (out["intensity"] - out["B_fuel"]).fillna(0.0)
 
-    out["p_bid"] = np.clip(
-        price_min + slope_bid * np.maximum(delta, 0.0) + spread / 2.0,
-        price_min,
-        price_max,
-    )
+    rng = float(price_max - price_min)
+    rng = max(rng, 1e-9)
 
-    out["p_ask"] = np.clip(
-        price_max - slope_ask * np.maximum(-delta, 0.0) - spread / 2.0,
-        price_min,
-        price_max,
-    )
+    # "doyum hızı" (k): slope büyüdükçe daha hızlı tavana/zemine yaklaşır ama "yapışmaz"
+    k_bid = float(max(slope_bid, 0.0)) / rng
+    k_ask = float(max(slope_ask, 0.0)) / rng
+
+    # Pozitif/negatif delta ayrıştır
+    dpos = np.maximum(delta.to_numpy(dtype=float), 0.0)
+    dneg = np.maximum((-delta).to_numpy(dtype=float), 0.0)
+
+    # 0..1 arası yumuşak sıkıştırma
+    bid_frac = 1.0 - np.exp(-k_bid * dpos)
+    ask_frac = 1.0 - np.exp(-k_ask * dneg)
+
+    # Fiyatlar (bounded ama clip yok: doğal olarak [min,max] içinde)
+    out["p_bid"] = price_min + rng * bid_frac + spread / 2.0
+    out["p_ask"] = price_max - rng * ask_frac - spread / 2.0
+
+    # Çok nadir numeric taşmaları güvenliğe al
+    out["p_bid"] = np.minimum(np.maximum(out["p_bid"], price_min), price_max)
+    out["p_ask"] = np.minimum(np.maximum(out["p_ask"], price_min), price_max)
 
     return out
 
@@ -172,10 +191,7 @@ def _market_clearing_price(df: pd.DataFrame, price_min: float, price_max: float,
 def _average_compliance_cost_price(df: pd.DataFrame, price_min: float, price_max: float) -> float:
     """
     Average Compliance Cost (ACC):
-    Sadece alıcıların (NetETS>0) p_bid değerlerini, net yükümlülükle ağırlıklandırarak ortalama fiyat üretir:
-
       P = sum(NetETS_i * p_bid_i) / sum(NetETS_i)   (NetETS>0)
-
     Sonra [price_min, price_max] bandına kırpılır.
     """
     buyers = df[df["net_ets"] > 0].copy()
@@ -192,9 +208,6 @@ def _average_compliance_cost_price(df: pd.DataFrame, price_min: float, price_max
     return float(np.clip(acc, price_min, price_max))
 
 
-# ============================================================
-# ADD: AUCTION CLEARING
-# ============================================================
 def _auction_clearing_price(
     df: pd.DataFrame,
     price_min: float,
@@ -203,15 +216,10 @@ def _auction_clearing_price(
 ) -> float:
     """
     Auction Clearing (talep sabit, yıl sonu compliance):
-
       Demand = sum(net_ets) for buyers (net_ets > 0)
       Supply = Demand * auction_supply_share
-
       En yüksek p_bid verenlerden başlayarak Supply kadar tahsis edilir.
       Clearing price = marjinal kazanan teklifin p_bid'i.
-
-    Basit varsayım:
-      Supply >= Demand ise fiyat floor gibi davranır -> price_min
     """
     buyers = df[df["net_ets"] > 0][["net_ets", "p_bid"]].copy()
     if buyers.empty:
@@ -223,7 +231,6 @@ def _auction_clearing_price(
 
     supply = demand * float(auction_supply_share)
     if not np.isfinite(supply) or supply <= 0:
-        # aşırı kıtlık gibi düşün: üst banda yasla
         return float(price_max)
 
     if supply >= demand:
@@ -250,29 +257,9 @@ def ets_hesapla(
     benchmark_top_pct: int = 100,
     free_alloc_share: float = 100.0,
     trf: float = 0.0,
-    price_method: str = "Market Clearing",  # ✅ yeni
-    auction_supply_share: float = 1.0,      # ✅ ADD
+    price_method: str = "Market Clearing",
+    auction_supply_share: float = 1.0,
 ):
-    """
-    AGK yönü:
-      AGK=1  -> tahsis yoğunluğu benchmark'a yaklaşır
-      AGK=0  -> tahsis yoğunluğu tesis yoğunluğuna yaklaşır
-
-    Formül:
-      T_i = I_i + AGK * (B_fuel - I_i)
-
-    Benchmark:
-      benchmark_top_pct=10 => en iyi %10 üretim dilimi
-      benchmark_top_pct=100 => tüm tesisler
-
-    TRF (Geçiş Dönemi Telafi Katsayısı):
-      İlave tahsis = max(0, I_i - B_fuel) * G_i * TRF
-
-    Price method:
-      - "Market Clearing"
-      - "Average Compliance Cost"
-      - "Auction Clearing"
-    """
     required = ["Plant", "FuelType", "Emissions_tCO2", "Generation_MWh"]
     for c in required:
         if c not in df.columns:
@@ -302,22 +289,17 @@ def ets_hesapla(
 
     # 4) Ücretsiz tahsis
     x["free_alloc"] = x["Generation_MWh"] * x["tahsis_intensity"]
-
-    # Free allocation share (policy lever): 100%=full free allocation; 0%=no free allocation
     x["free_alloc"] = x["free_alloc"] * (float(free_alloc_share) / 100.0)
 
-    # TRF (Geçiş Dönemi Telafi Katsayısı): benchmark nedeniyle oluşan ilave yükün pilot dönemde telafisi
-    # İlave tahsis (tCO2) = max(0, intensity - B_fuel) * Generation_MWh * TRF
+    # TRF telafisi
     trf_val = float(trf) if trf is not None else 0.0
     x["ilave_tahsis_trf"] = np.maximum(x["intensity"] - x["B_fuel"], 0.0) * x["Generation_MWh"] * trf_val
-
-    # Toplam ücretsiz tahsis = mevcut tahsis + TRF ilavesi
     x["free_alloc_total"] = x["free_alloc"] + x["ilave_tahsis_trf"]
 
     # 5) Net ETS pozisyonu
     x["net_ets"] = x["Emissions_tCO2"] - x["free_alloc_total"]
 
-    # 6) BID/ASK
+    # 6) BID/ASK (✅ soft mapping)
     x = _build_bid_ask(x, price_min, price_max, slope_bid, slope_ask, spread)
 
     # 7) Price
