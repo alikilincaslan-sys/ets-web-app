@@ -147,7 +147,7 @@ else:
     benchmark_top_pct = 100
 
 # -------------------------
-# Price method (ADD: Auction Clearing)
+# Price method
 # -------------------------
 price_method = st.sidebar.selectbox(
     "Fiyat Hesaplama Yöntemi",
@@ -155,7 +155,7 @@ price_method = st.sidebar.selectbox(
     index=0
 )
 
-# ADD: Auction slider only when Auction Clearing selected
+# Auction slider only when Auction Clearing selected
 auction_supply_share = 1.0
 if price_method == "Auction Clearing":
     auction_supply_share = st.sidebar.slider(
@@ -189,7 +189,7 @@ trf = st.sidebar.slider(
          "TRF=0 → telafi yok; TRF=1 → (I−B) farkının tamamı telafi edilir (sadece I>B olan tesisler için)."
 )
 
-# FIX: UI'daki Türkçe seçimi, ets_model.ets_hesapla'nın beklediği koda çevir
+# UI'daki Türkçe seçimi, ets_model.ets_hesapla'nın beklediği koda çevir
 BENCHMARK_METHOD_MAP = {
     "Üretim ağırlıklı benchmark": "generation_weighted",
     "Kurulu güç ağırlıklı benchmark": "capacity_weighted",
@@ -289,6 +289,7 @@ if any(len(v) > 0 for v in dropped.values()):
         st.sidebar.write("Lignite:", ", ".join(dropped["LIGNITE"]))
 
 
+
 # ============================================================
 # RUN MODEL
 # ============================================================
@@ -342,8 +343,9 @@ if st.button("Run ETS Model"):
     with c6:
         kpi_card("Avg ETS Impact", f"{avg_tl_mwh:,.2f} TL/MWh", "Gen.-weighted")
 
+
     # ========================================================
-    # IEA VISUALS – Market Summary / Price Formation / Bid-Ask / Benchmark Distribution
+    # IEA VISUALS – Market Summary / Price formation / Bid-Ask / Benchmark Distribution
     # ========================================================
     st.subheader("IEA-style market visuals")
 
@@ -373,7 +375,7 @@ if st.button("Run ETS Model"):
     st.caption("Note: In Auction Clearing, demand is assumed inelastic and supply is set as a share of total compliance demand.")
 
 
-    # ---------- NEW: Price formation chart (method-specific, X = allowances) ----------
+    # ---------- Price formation helpers ----------
     def _demand_at_price(buyers_df: pd.DataFrame, p: float, pmin: float) -> float:
         if buyers_df.empty:
             return 0.0
@@ -386,12 +388,14 @@ if st.button("Run ETS Model"):
     def _supply_at_price(sellers_df: pd.DataFrame, p: float, pmax: float) -> float:
         if sellers_df.empty:
             return 0.0
-        q0 = (-sellers_df["net_ets"]).to_numpy(dtype=float)  # supply quantity
+        q0 = (-sellers_df["net_ets"]).to_numpy(dtype=float)
         p_ask = sellers_df["p_ask"].to_numpy(dtype=float)
         denom = np.maximum(pmax - p_ask, 1e-9)
         frac = (p - p_ask) / denom
         return float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
 
+
+    # ---------- NEW) Price formation chart ----------
     with st.expander("Price formation (how the carbon price is formed)", expanded=True):
         buyers = sonuc_df.loc[sonuc_df["net_ets"] > 0, ["net_ets", "p_bid"]].copy()
         sellers = sonuc_df.loc[sonuc_df["net_ets"] < 0, ["net_ets", "p_ask"]].copy()
@@ -399,7 +403,7 @@ if st.button("Run ETS Model"):
         fig_pf = go.Figure()
 
         if price_method == "Market Clearing":
-            # Step-like inverse curves (context)
+            # Demand stack (highest→lowest bids)
             if not buyers.empty:
                 b = buyers.sort_values("p_bid", ascending=False).copy()
                 b["cum_q"] = b["net_ets"].cumsum()
@@ -408,6 +412,7 @@ if st.button("Run ETS Model"):
                     mode="lines", name="Demand curve (bids)"
                 ))
 
+            # Supply stack (lowest→highest asks)
             if not sellers.empty:
                 s = sellers.sort_values("p_ask", ascending=True).copy()
                 s["supply_q"] = (-s["net_ets"]).astype(float)
@@ -417,7 +422,6 @@ if st.button("Run ETS Model"):
                     mode="lines", name="Supply curve (asks)"
                 ))
 
-            # Intersection markers using continuous activation logic
             qd = _demand_at_price(buyers, float(clearing_price), float(price_min))
             qs = _supply_at_price(sellers, float(clearing_price), float(price_max))
             q_star = float(min(qd, qs))
@@ -514,7 +518,8 @@ if st.button("Run ETS Model"):
         if buyers.empty:
             st.info("No buyers (net_ets > 0) in the current scope — bid curve not available.")
         else:
-            buyers = buyers.sort_values("p_bid", ascending=True)
+            # ✅ DÜZELTME: talep eğrisi highest→lowest (descending) olmalı
+            buyers = buyers.sort_values("p_bid", ascending=False)
             buyers["cum_q"] = buyers["net_ets"].cumsum()
 
             fig_curves = px.line(
@@ -524,7 +529,7 @@ if st.button("Run ETS Model"):
                 template="simple_white",
                 labels={"cum_q": "Allowances (tCO₂)", "p_bid": "Price (€/tCO₂)"},
             )
-            fig_curves.update_traces(name="Demand (bids)", line=dict(color="#1f77b4"))
+            fig_curves.update_traces(name="Demand (bids)")
 
             if not sellers.empty:
                 sellers = sellers.sort_values("p_ask", ascending=True)
@@ -538,7 +543,7 @@ if st.button("Run ETS Model"):
                     template="simple_white",
                     labels={"cum_q": "Allowances (tCO₂)", "p_ask": "Price (€/tCO₂)"},
                 )
-                fig_s.update_traces(name="Supply (asks)", line=dict(color="#d62728"))
+                fig_s.update_traces(name="Supply (asks)")
                 for tr in fig_s.data:
                     fig_curves.add_trace(tr)
 
