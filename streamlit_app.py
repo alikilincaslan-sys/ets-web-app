@@ -17,6 +17,7 @@ from data_cleaning import clean_ets_input
 # ============================================================
 # DEFAULTS
 # ============================================================
+
 DEFAULTS = {
     "price_range": (1, 15),
     "agk": 0.50,
@@ -29,14 +30,16 @@ DEFAULTS = {
     "trf": 0.0,
 }
 
-st.set_page_config(page_title="ETS Geliştirme Modülü – Scenario Compare", layout="wide")
-st.title("ETS Geliştirme Modülü – Scenario Comparison (Reference vs Scenario 2)")
+st.set_page_config(page_title="ETS Geliştirme Modülü v002 – Scenario Compare", layout="wide")
+st.title("ETS Geliştirme Modülü v002 – Scenario Comparison (Reference vs Scenario 2)")
 
 
 # ============================================================
 # INFOGRAPHIC CSS
 # ============================================================
-st.markdown("""
+
+st.markdown(
+    """
 <style>
   .kpi {
     background: #f2f2f2;
@@ -67,22 +70,29 @@ st.markdown("""
     margin-top: 4px;
   }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
+
 
 def kpi_card(label, value, sub=""):
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div class="kpi">
       <div class="label">{label}</div>
       <div class="value">{value}</div>
       <div class="sub">{sub}</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 
 # ============================================================
 # HELPERS
 # ============================================================
-def read_all_sheets(file) -> pd.DataFrame:
+
+def read_all_sheets(file):
     xls = pd.ExcelFile(file)
     frames = []
     for sh in xls.sheet_names:
@@ -91,103 +101,77 @@ def read_all_sheets(file) -> pd.DataFrame:
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
 
-def _fuel_group_of(ft: str) -> str:
-    s = str(ft).strip().lower()
-    if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
-        return "DG"
-    if any(k in s for k in ["ithal", "import", "imported"]):
-        return "IMPORT_COAL"
-    if any(k in s for k in ["linyit", "lignite"]):
-        return "LIGNITE"
-    return "OTHER"
 
-def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
-    if option == "Include all plants":
-        return df, []
-    dfg = df[df["FuelType"].apply(_fuel_group_of) == group_code].copy()
-    if dfg.empty:
-        return df, []
+def add_cost_columns(df: pd.DataFrame, fx_rate: float) -> pd.DataFrame:
+    """
+    Adds:
+      - ets_net_cashflow_TL/MWh
+      - ets_cost_TL_total (approx: TL/MWh * MWh)
+    Also reorders columns to keep InstalledCapacity_MW right after Plant when possible.
+    """
+    out = df.copy()
 
-    agg = dfg.groupby("Plant", as_index=False)[["Emissions_tCO2", "Generation_MWh"]].sum()
-    agg["EI"] = agg["Emissions_tCO2"] / agg["Generation_MWh"].replace(0, np.nan)
-    agg = agg.dropna(subset=["EI"])
-    if agg.empty:
-        return df, []
+    if "ets_net_cashflow_€/MWh" in out.columns:
+        out["ets_net_cashflow_TL/MWh"] = pd.to_numeric(out["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx_rate)
+    else:
+        # fallback: if only total € exists
+        if "ets_net_cashflow_€" in out.columns and "Generation_MWh" in out.columns:
+            gen = pd.to_numeric(out["Generation_MWh"], errors="coerce").replace(0, np.nan)
+            out["ets_net_cashflow_TL/MWh"] = (pd.to_numeric(out["ets_net_cashflow_€"], errors="coerce") * float(fx_rate)) / gen
+        else:
+            out["ets_net_cashflow_TL/MWh"] = np.nan
 
-    asc = option == "Exclude 5 plants with LOWEST EI"
-    picks = agg.sort_values("EI", ascending=asc).head(n)["Plant"].tolist()
+    if "Generation_MWh" in out.columns:
+        out["ets_cost_TL_total"] = pd.to_numeric(out["ets_net_cashflow_TL/MWh"], errors="coerce") * pd.to_numeric(out["Generation_MWh"], errors="coerce")
+    else:
+        out["ets_cost_TL_total"] = np.nan
 
-    mask_group = df["FuelType"].apply(_fuel_group_of) == group_code
-    df2 = df[~(mask_group & df["Plant"].isin(picks))].copy()
-    return df2, picks
-
-
-def add_cost_columns(df_in: pd.DataFrame, fx_rate: float, clearing_price: float) -> pd.DataFrame:
-    df = df_in.copy()
-
-    # capacity merge safety (if missing)
-    if "InstalledCapacity_MW" not in df.columns:
-        df["InstalledCapacity_MW"] = np.nan
-
-    # TL/MWh
-    if "ets_net_cashflow_€/MWh" in df.columns:
-        df["ets_net_cashflow_TL/MWh"] = pd.to_numeric(df["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx_rate)
-
-    # Total €
-    if "net_ets" in df.columns:
-        df["ets_net_cashflow_€"] = pd.to_numeric(df["net_ets"], errors="coerce") * float(clearing_price)
-        df["ets_net_cashflow_TL"] = df["ets_net_cashflow_€"] * float(fx_rate)
-
-    # fallback TL/MWh from totals
-    if "ets_net_cashflow_TL/MWh" not in df.columns and "ets_net_cashflow_TL" in df.columns and "Generation_MWh" in df.columns:
-        gen = pd.to_numeric(df["Generation_MWh"], errors="coerce").replace(0, np.nan)
-        df["ets_net_cashflow_TL/MWh"] = df["ets_net_cashflow_TL"] / gen
-
-    # reorder: Plant then InstalledCapacity_MW
-    cols = list(df.columns)
+    # put InstalledCapacity_MW right after Plant if possible
+    cols = list(out.columns)
     if "Plant" in cols and "InstalledCapacity_MW" in cols:
         cols.remove("InstalledCapacity_MW")
         plant_idx = cols.index("Plant")
         cols.insert(plant_idx + 1, "InstalledCapacity_MW")
-        df = df[cols]
+        out = out[cols]
 
-    return df
+    return out
 
 
-def to_excel_bytes(ref_df: pd.DataFrame,
-                   sc2_df: pd.DataFrame,
-                   comp_df: pd.DataFrame,
-                   bm_map_ref: dict,
-                   bm_map_sc2: dict,
-                   params_ref: dict,
-                   params_sc2: dict) -> bytes:
+def to_excel_bytes(
+    ref_df: pd.DataFrame,
+    sc2_df: pd.DataFrame,
+    comp_df: pd.DataFrame,
+    bm_map_ref: dict,
+    bm_map_sc2: dict,
+    params_ref: dict,
+    params_sc2: dict,
+) -> bytes:
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         ref_df.to_excel(writer, index=False, sheet_name="Results_Reference")
         sc2_df.to_excel(writer, index=False, sheet_name="Results_Scenario2")
-        comp_df.to_excel(writer, index=False, sheet_name="Comparison")
+        comp_df.to_excel(writer, index=False, sheet_name="Comparison_TLperMWh")
 
-        # Benchmarks
-        if isinstance(bm_map_ref, dict) and len(bm_map_ref) > 0:
-            pd.DataFrame([{"FuelType": k, "Benchmark_Reference": v} for k, v in bm_map_ref.items()]) \
-              .to_excel(writer, index=False, sheet_name="Benchmarks_Ref")
-        if isinstance(bm_map_sc2, dict) and len(bm_map_sc2) > 0:
-            pd.DataFrame([{"FuelType": k, "Benchmark_Scenario2": v} for k, v in bm_map_sc2.items()]) \
-              .to_excel(writer, index=False, sheet_name="Benchmarks_Sc2")
+        pd.DataFrame({"FuelType": list(bm_map_ref.keys()), "Benchmark_Ref": list(bm_map_ref.values())}).to_excel(
+            writer, index=False, sheet_name="Benchmark_Ref"
+        )
+        pd.DataFrame({"FuelType": list(bm_map_sc2.keys()), "Benchmark_Sc2": list(bm_map_sc2.values())}).to_excel(
+            writer, index=False, sheet_name="Benchmark_Sc2"
+        )
 
-        # Params
-        pd.DataFrame([params_ref]).to_excel(writer, index=False, sheet_name="Params_Ref")
-        pd.DataFrame([params_sc2]).to_excel(writer, index=False, sheet_name="Params_Sc2")
+        pd.DataFrame([params_ref]).to_excel(writer, index=False, sheet_name="Params_Reference")
+        pd.DataFrame([params_sc2]).to_excel(writer, index=False, sheet_name="Params_Scenario2")
 
-    return out.getvalue()
+    out.seek(0)
+    return out.read()
 
 
 # ============================================================
-# SIDEBAR – GLOBAL SETTINGS (common for both scenarios)
+# BENCHMARK METHOD (COMMON)
 # ============================================================
+
 st.sidebar.header("Global Settings (apply to both scenarios)")
 
-# Benchmark method (common)
 benchmark_method_ui = st.sidebar.selectbox(
     "Benchmark belirleme yöntemi (common)",
     [
@@ -222,55 +206,40 @@ else:
     benchmark_top_pct = 100
 
 
-# Scope controls (common)
-st.sidebar.subheader("Benchmark scope (common, by fuel)")
-SCOPE_OPTIONS = [
-    "Include all plants",
-    "Exclude 5 plants with LOWEST EI",
-    "Exclude 5 plants with HIGHEST EI",
-]
-scope_dg = st.sidebar.selectbox("DG Plants", SCOPE_OPTIONS, index=0, key="scope_dg")
-scope_import = st.sidebar.selectbox("Imported Coal Plants", SCOPE_OPTIONS, index=0, key="scope_import")
-scope_lignite = st.sidebar.selectbox("Lignite Plants", SCOPE_OPTIONS, index=0, key="scope_lignite")
-
-
 # ============================================================
-# SIDEBAR – SCENARIO PARAMETERS (Reference vs Scenario 2)
+# SIDEBAR – SCENARIO PARAMETERS (TOP)
 # ============================================================
+
 st.sidebar.header("Scenario Parameters")
-
 tabs = st.sidebar.tabs(["Reference", "Scenario 2"])
 
-def scenario_controls(prefix: str, default_overrides: dict = None):
+
+def scenario_controls(prefix: str):
     d = DEFAULTS.copy()
-    if default_overrides:
-        d.update(default_overrides)
 
-    with st.sidebar:
-        pass
-
-    # controls inside the active tab (caller context)
     price_min, price_max = st.slider(
         f"Karbon Fiyat Aralığı (€/tCO₂) [{prefix}]",
-        0, 200,
+        0,
+        200,
         st.session_state.get(f"{prefix}_price_range", d["price_range"]),
         step=1,
-        key=f"{prefix}_price_range"
+        key=f"{prefix}_price_range",
     )
 
     agk = st.slider(
         f"Adil Geçiş Katsayısı (AGK) [{prefix}]",
-        0.0, 1.0,
+        0.0,
+        1.0,
         float(st.session_state.get(f"{prefix}_agk", d["agk"])),
         step=0.05,
-        key=f"{prefix}_agk"
+        key=f"{prefix}_agk",
     )
 
     price_method = st.selectbox(
         f"Fiyat Hesaplama Yöntemi [{prefix}]",
         ["Market Clearing", "Average Compliance Cost", "Auction Clearing"],
-        index=0 if d["price_method"] == "Market Clearing" else (1 if d["price_method"] == "Average Compliance Cost" else 2),
-        key=f"{prefix}_price_method"
+        index=0,
+        key=f"{prefix}_price_method",
     )
 
     auction_supply_share = 1.0
@@ -282,19 +251,39 @@ def scenario_controls(prefix: str, default_overrides: dict = None):
             value=int(st.session_state.get(f"{prefix}_auction_supply_pct", 100)),
             step=10,
             key=f"{prefix}_auction_supply_pct",
-            help="Demand inelastic varsayımıyla, arzı toplam talebin yüzdesi olarak ayarlar."
         ) / 100.0
 
-    slope_bid = st.slider(f"Talep Eğimi (β_bid) [{prefix}]", 10, 500, int(d["slope_bid"]), step=10, key=f"{prefix}_slope_bid")
-    slope_ask = st.slider(f"Arz Eğimi (β_ask) [{prefix}]", 10, 500, int(d["slope_ask"]), step=10, key=f"{prefix}_slope_ask")
-    spread = st.slider(f"Bid/Ask Spread [{prefix}]", 0.0, 10.0, float(d["spread"]), step=0.5, key=f"{prefix}_spread")
+    slope_bid = st.slider(
+        f"Talep Eğimi (β_bid) [{prefix}]",
+        10,
+        500,
+        int(st.session_state.get(f"{prefix}_slope_bid", d["slope_bid"])),
+        step=10,
+        key=f"{prefix}_slope_bid",
+    )
+    slope_ask = st.slider(
+        f"Arz Eğimi (β_ask) [{prefix}]",
+        10,
+        500,
+        int(st.session_state.get(f"{prefix}_slope_ask", d["slope_ask"])),
+        step=10,
+        key=f"{prefix}_slope_ask",
+    )
+    spread = st.slider(
+        f"Bid/Ask Spread [{prefix}]",
+        0.0,
+        10.0,
+        float(st.session_state.get(f"{prefix}_spread", d["spread"])),
+        step=0.5,
+        key=f"{prefix}_spread",
+    )
 
     fx_rate = st.number_input(
         f"Euro Kuru (TL/€) [{prefix}]",
         min_value=0.0,
         value=float(st.session_state.get(f"{prefix}_fx_rate", d["fx_rate"])),
         step=1.0,
-        key=f"{prefix}_fx_rate"
+        key=f"{prefix}_fx_rate",
     )
 
     trf = st.slider(
@@ -303,7 +292,7 @@ def scenario_controls(prefix: str, default_overrides: dict = None):
         max_value=1.0,
         value=float(st.session_state.get(f"{prefix}_trf", d["trf"])),
         step=0.05,
-        key=f"{prefix}_trf"
+        key=f"{prefix}_trf",
     )
 
     return {
@@ -315,9 +304,10 @@ def scenario_controls(prefix: str, default_overrides: dict = None):
         "slope_bid": slope_bid,
         "slope_ask": slope_ask,
         "spread": spread,
-        "fx_rate": float(fx_rate),
-        "trf": float(trf),
+        "fx_rate": fx_rate,
+        "trf": trf,
     }
+
 
 with tabs[0]:
     ref_params = scenario_controls("REF")
@@ -327,8 +317,59 @@ with tabs[1]:
 
 
 # ============================================================
+# BENCHMARK SCOPE (OPTIONAL FILTERING BY FUEL GROUP) – COMMON
+# ============================================================
+
+st.sidebar.subheader("Benchmark scope (by fuel) (common)")
+
+SCOPE_OPTIONS = [
+    "Include all plants",
+    "Exclude 5 plants with LOWEST EI",
+    "Exclude 5 plants with HIGHEST EI",
+]
+
+scope_dg = st.sidebar.selectbox("DG Plants", SCOPE_OPTIONS, index=0, key="scope_dg")
+scope_import = st.sidebar.selectbox("Imported Coal Plants", SCOPE_OPTIONS, index=0, key="scope_import")
+scope_lignite = st.sidebar.selectbox("Lignite Plants", SCOPE_OPTIONS, index=0, key="scope_lignite")
+
+
+def _fuel_group_of(ft: str) -> str:
+    s = str(ft).strip().lower()
+    if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
+        return "DG"
+    if any(k in s for k in ["ithal", "import", "imported"]):
+        return "IMPORT_COAL"
+    if any(k in s for k in ["linyit", "lignite"]):
+        return "LIGNITE"
+    return "OTHER"
+
+
+def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
+    if option == "Include all plants":
+        return df, []
+
+    dfg = df[df["FuelType"].apply(_fuel_group_of) == group_code].copy()
+    if dfg.empty:
+        return df, []
+
+    agg = dfg.groupby("Plant", as_index=False)[["Emissions_tCO2", "Generation_MWh"]].sum()
+    agg["EI"] = agg["Emissions_tCO2"] / agg["Generation_MWh"].replace(0, np.nan)
+    agg = agg.dropna(subset=["EI"])
+    if agg.empty:
+        return df, []
+
+    asc = option == "Exclude 5 plants with LOWEST EI"
+    picks = agg.sort_values("EI", ascending=asc).head(n)["Plant"].tolist()
+
+    mask_group = df["FuelType"].apply(_fuel_group_of) == group_code
+    df2 = df[~(mask_group & df["Plant"].isin(picks))].copy()
+    return df2, picks
+
+
+# ============================================================
 # FILE UPLOAD
 # ============================================================
+
 uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
 if uploaded is None:
     st.info("Lütfen Excel dosyası yükleyin.")
@@ -337,15 +378,14 @@ if uploaded is None:
 df_all_raw = read_all_sheets(uploaded)
 df_all = clean_ets_input(df_all_raw)
 
-
-# ============================================================
-# APPLY COMMON SCOPE FILTER
-# ============================================================
+# Apply common scope filtering
 df_scoped = df_all.copy()
 dropped = {"DG": [], "IMPORT_COAL": [], "LIGNITE": []}
-df_scoped, dropped["DG"] = _apply_scope(df_scoped, "DG", scope_dg)
-df_scoped, dropped["IMPORT_COAL"] = _apply_scope(df_scoped, "IMPORT_COAL", scope_import)
-df_scoped, dropped["LIGNITE"] = _apply_scope(df_scoped, "LIGNITE", scope_lignite)
+
+df_scoped, dropped["DG"] = _apply_scope(df_scoped, "DG", st.session_state.get("scope_dg", "Include all plants"))
+df_scoped, dropped["IMPORT_COAL"] = _apply_scope(df_scoped, "IMPORT_COAL", st.session_state.get("scope_import", "Include all plants"))
+df_scoped, dropped["LIGNITE"] = _apply_scope(df_scoped, "LIGNITE", st.session_state.get("scope_lignite", "Include all plants"))
+
 df_all = df_scoped
 
 if any(len(v) > 0 for v in dropped.values()):
@@ -361,6 +401,7 @@ if any(len(v) > 0 for v in dropped.values()):
 # ============================================================
 # RUN BOTH SCENARIOS
 # ============================================================
+
 run = st.button("Run BOTH Scenarios (Reference + Scenario 2)")
 
 if run:
@@ -398,11 +439,13 @@ if run:
         auction_supply_share=float(sc2_params["auction_supply_share"]),
     )
 
-    # Add TL and ordering
-    ref_df = add_cost_columns(ref_out, fx_rate=ref_params["fx_rate"], clearing_price=float(ref_price))
-    sc2_df = add_cost_columns(sc2_out, fx_rate=sc2_params["fx_rate"], clearing_price=float(sc2_price))
+    # Add TL columns + reorder
+    ref_df = add_cost_columns(ref_out, fx_rate=ref_params["fx_rate"])
+    sc2_df = add_cost_columns(sc2_out, fx_rate=sc2_params["fx_rate"])
 
-    # Basic headline
+    # -------------------------
+    # HEADLINE
+    # -------------------------
     st.subheader("Scenario headline results")
     h1, h2, h3 = st.columns(3)
     with h1:
@@ -412,30 +455,34 @@ if run:
     with h3:
         kpi_card("Δ Price (Sc2 - Ref)", f"{(sc2_price - ref_price):+.2f} €/tCO₂", "difference")
 
-    # Compare plant-level TL/MWh
+    # ============================================================
+    # PLANT-LEVEL COMPARISON (FIXED: NO KEYERROR)
+    # ============================================================
     st.subheader("Plant-level comparison (TL/MWh)")
-    # choose best available columns
-    ref_col = "ets_net_cashflow_TL/MWh" if "ets_net_cashflow_TL/MWh" in ref_df.columns else None
-    sc2_col = "ets_net_cashflow_TL/MWh" if "ets_net_cashflow_TL/MWh" in sc2_df.columns else None
 
-    comp = ref_df[["Plant", "InstalledCapacity_MW"]].copy()
-    comp = comp.merge(ref_df[["Plant"] + ([ref_col] if ref_col else [])], on="Plant", how="left")
-    comp = comp.merge(sc2_df[["Plant"] + ([sc2_col] if sc2_col else [])], on="Plant", how="left", suffixes=("_Ref", "_Sc2"))
+    def _ensure_tl_per_mwh(df: pd.DataFrame, fx: float) -> pd.DataFrame:
+        df = df.copy()
+        if "ets_net_cashflow_€/MWh" in df.columns and "ets_net_cashflow_TL/MWh" not in df.columns:
+            df["ets_net_cashflow_TL/MWh"] = pd.to_numeric(df["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx)
+        if "ets_net_cashflow_TL/MWh" not in df.columns:
+            if "ets_net_cashflow_€" in df.columns and "Generation_MWh" in df.columns:
+                gen = pd.to_numeric(df["Generation_MWh"], errors="coerce").replace(0, np.nan)
+                df["ets_net_cashflow_TL/MWh"] = (pd.to_numeric(df["ets_net_cashflow_€"], errors="coerce") * float(fx)) / gen
+        return df
 
-    # rename safely
-    if ref_col:
-        comp = comp.rename(columns={ref_col: "TL_per_MWh_Ref"})
-    else:
-        comp["TL_per_MWh_Ref"] = np.nan
+    ref_df2 = _ensure_tl_per_mwh(ref_df, ref_params["fx_rate"])
+    sc2_df2 = _ensure_tl_per_mwh(sc2_df, sc2_params["fx_rate"])
 
-    if sc2_col:
-        comp = comp.rename(columns={sc2_col: "TL_per_MWh_Sc2"})
-    else:
-        comp["TL_per_MWh_Sc2"] = np.nan
+    comp = ref_df2[["Plant"]].copy()
+    comp["InstalledCapacity_MW"] = ref_df2["InstalledCapacity_MW"] if "InstalledCapacity_MW" in ref_df2.columns else np.nan
+    comp["TL_per_MWh_Ref"] = pd.to_numeric(ref_df2.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
 
+    sc2_small = sc2_df2[["Plant"]].copy()
+    sc2_small["TL_per_MWh_Sc2"] = pd.to_numeric(sc2_df2.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
+
+    comp = comp.merge(sc2_small, on="Plant", how="outer")
     comp["Δ_TL_per_MWh"] = comp["TL_per_MWh_Sc2"] - comp["TL_per_MWh_Ref"]
 
-    # sort by absolute delta
     view = comp.copy()
     view["absΔ"] = view["Δ_TL_per_MWh"].abs()
     view = view.sort_values("absΔ", ascending=False).head(30).sort_values("Δ_TL_per_MWh")
@@ -447,57 +494,59 @@ if run:
         orientation="h",
         template="simple_white",
         labels={"Δ_TL_per_MWh": "Δ Net ETS impact (TL/MWh) [Scenario2 - Reference]", "Plant": ""},
-        title="Top 30 plants by |Δ TL/MWh|"
+        title="Top 30 plants by |Δ TL/MWh|",
     )
     fig_delta.update_layout(height=750, margin=dict(l=10, r=10, t=60, b=10))
     fig_delta.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=True, zerolinecolor="black")
     fig_delta.update_yaxes(showgrid=False)
     st.plotly_chart(fig_delta, use_container_width=True)
 
-    # Show full tables side by side
-    st.subheader("Raw results (same columns) – Reference vs Scenario 2")
-    cL, cR = st.columns(2)
-    with cL:
-        st.markdown("### Reference – Results")
-        st.dataframe(ref_df, use_container_width=True, height=520)
-    with cR:
-        st.markdown("### Scenario 2 – Results")
-        st.dataframe(sc2_df, use_container_width=True, height=520)
+    st.divider()
 
-    st.subheader("Comparison table (Δ)")
-    st.dataframe(comp.drop(columns=["absΔ"], errors="ignore"), use_container_width=True)
+    # ============================
+    # SHOW RAW TABLES
+    # ============================
+    with st.expander("Reference results (raw table)", expanded=False):
+        st.dataframe(ref_df, use_container_width=True)
 
-    # Excel download
-    params_ref = {
-        **ref_params,
-        "benchmark_method": benchmark_method_code,
-        "benchmark_top_pct": int(benchmark_top_pct),
-        "scope_dg": scope_dg,
-        "scope_import": scope_import,
-        "scope_lignite": scope_lignite,
-    }
-    params_sc2 = {
-        **sc2_params,
-        "benchmark_method": benchmark_method_code,
-        "benchmark_top_pct": int(benchmark_top_pct),
-        "scope_dg": scope_dg,
-        "scope_import": scope_import,
-        "scope_lignite": scope_lignite,
-    }
+    with st.expander("Scenario 2 results (raw table)", expanded=False):
+        st.dataframe(sc2_df, use_container_width=True)
 
+    with st.expander("Comparison table (TL/MWh)", expanded=False):
+        st.dataframe(comp.drop(columns=["absΔ"], errors="ignore"), use_container_width=True)
+
+    # ============================
+    # DOWNLOAD EXCEL
+    # ============================
     excel_bytes = to_excel_bytes(
         ref_df=ref_df,
         sc2_df=sc2_df,
         comp_df=comp.drop(columns=["absΔ"], errors="ignore"),
-        bm_map_ref=ref_bm_map,
-        bm_map_sc2=sc2_bm_map,
-        params_ref=params_ref,
-        params_sc2=params_sc2,
+        bm_map_ref=ref_bm_map or {},
+        bm_map_sc2=sc2_bm_map or {},
+        params_ref={
+            **ref_params,
+            "benchmark_method": benchmark_method_code,
+            "benchmark_top_pct": int(benchmark_top_pct),
+            "scope_dg": scope_dg,
+            "scope_import": scope_import,
+            "scope_lignite": scope_lignite,
+        },
+        params_sc2={
+            **sc2_params,
+            "benchmark_method": benchmark_method_code,
+            "benchmark_top_pct": int(benchmark_top_pct),
+            "scope_dg": scope_dg,
+            "scope_import": scope_import,
+            "scope_lignite": scope_lignite,
+        },
     )
 
     st.download_button(
-        "Download Scenario Results as Excel (.xlsx)",
+        "Download ALL results as Excel (.xlsx)",
         data=excel_bytes,
         file_name="ets_scenario_comparison.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+else:
+    st.info("Dosyayı yükleyin ve 'Run BOTH Scenarios' butonuna basın.")
