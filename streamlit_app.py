@@ -500,8 +500,30 @@ if st.session_state.get("has_results", False):
     # ============================================================
     st.subheader("Plant-level comparison (TL/MWh)")
 
-    def _fuel_label(ft: str) -> str:
+    def _fuel_label(ft: str, plant: str | None = None) -> str:
+        """Robust fuel grouping.
+        Primary signal: FuelType (sheet name).
+        Fallback: Plant name keywords (to catch mis-filed plants).
+        """
         s = str(ft).strip().lower()
+
+        # --- Plant-name fallback (handles mis-filed plants) ---
+        p = str(plant).strip().lower() if plant is not None else ""
+
+        # Hard overrides (known tricky names)
+        # Ereğli Demir Çelik / ERDEMİR is typically NG/industrial CHP in datasets
+        if ("ereğli" in p and "demir" in p) or ("erdemir" in p):
+            return "Natural Gas"
+
+        # Generic plant-name hints
+        if any(k in p for k in ["doğalgaz", "dogalgaz", "natural gas", "gaz", "ng", "ccgt", "kombine", "combined cycle", "kojenerasyon", "cogeneration", "chp"]):
+            return "Natural Gas"
+        if any(k in p for k in ["ithal", "import"]):
+            return "Imported Coal"
+        if any(k in p for k in ["linyit", "lignite"]):
+            return "Lignite"
+
+        # --- FuelType (sheet) classification ---
         if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
             return "Natural Gas"
         if any(k in s for k in ["ithal", "import", "imported"]):
@@ -526,7 +548,9 @@ if st.session_state.get("has_results", False):
     if "FuelType" not in comp.columns and "FuelType" in sc2_df.columns:
         comp = comp.merge(sc2_df[["Plant", "FuelType"]], on="Plant", how="left")
 
-    comp["FuelGroup"] = comp["FuelType"].apply(_fuel_label) if "FuelType" in comp.columns else "Other"
+    # ✅ Robust fuel grouping (FuelType + Plant together)
+    comp["FuelGroup"] = comp.apply(lambda r: _fuel_label(r.get("FuelType", ""), r.get("Plant", "")), axis=1) if "FuelType" in comp.columns else "Other"
+
     comp["Δ_TL_per_MWh"] = comp["TL_per_MWh_Sc2"] - comp["TL_per_MWh_Ref"]
 
     # ✅ Fuel filter (bu değişince sadece yeniden çizilir; model tekrar çalışmaz)
@@ -632,7 +656,8 @@ if st.session_state.get("has_results", False):
              .apply(lambda x: pd.Series({"EI": _wavg(x), "W": np.nansum(x["_W"])}))
         ).reset_index(drop=True)
 
-        ei["FuelGroup"] = ei["FuelType"].apply(_fuel_label)
+        # ✅ robust grouping: use FuelType + Plant together
+        ei["FuelGroup"] = ei.apply(lambda r: _fuel_label(r.get("FuelType", ""), r.get("Plant", "")), axis=1)
         return ei
 
     def _bench_group_map(bm_map: dict) -> dict:
@@ -647,7 +672,7 @@ if st.session_state.get("has_results", False):
                 continue
             if not np.isfinite(b):
                 continue
-            grp = _fuel_label(k)
+            grp = _fuel_label(k, None)
             # keep first seen
             if grp not in out:
                 out[grp] = b
@@ -688,16 +713,29 @@ if st.session_state.get("has_results", False):
         if fuel_choice != "All":
             ei_all = ei_all[ei_all["FuelGroup"] == fuel_choice].copy()
 
-        # Choose ordering by Reference EI_eff when available (else average)
-        ref_order = (
-            ei_all[ei_all["Scenario"] == "Reference"]
-            .groupby("Plant")["EI_eff"].mean()
-            .sort_values()
-        )
-        if ref_order.empty:
-            ref_order = ei_all.groupby("Plant")["EI_eff"].mean().sort_values()
+        # === Determine ordering dynamically ===
+        if show_ref:
+            # Reference açıkken: Reference EI_eff sırası baz alınır
+            order_series = (
+                ei_all[ei_all["Scenario"] == "Reference"]
+                .groupby("Plant")["EI_eff"]
+                .mean()
+                .sort_values()
+            )
+        else:
+            # Sadece Scenario 2 açıkken: onun sırası baz alınır
+            order_series = (
+                ei_all[ei_all["Scenario"] == "Scenario 2"]
+                .groupby("Plant")["EI_eff"]
+                .mean()
+                .sort_values()
+            )
 
-        order_plants = ref_order.index.tolist()
+        # Fallback (çok nadir): hangi senaryo seçildiyse boşsa, genel ortalama ile sırala
+        if order_series.empty:
+            order_series = ei_all.groupby("Plant")["EI_eff"].mean().sort_values()
+
+        order_plants = order_series.index.tolist()
         ei_all = ei_all[ei_all["Plant"].isin(order_plants)].copy()
 
         # Rank axis (1..N)
