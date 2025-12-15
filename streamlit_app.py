@@ -167,6 +167,13 @@ def to_excel_bytes(
 
 
 # ============================================================
+# SESSION STATE INIT (✅ fuel filter değişince yeniden run etmesin)
+# ============================================================
+if "has_results" not in st.session_state:
+    st.session_state["has_results"] = False
+
+
+# ============================================================
 # BENCHMARK METHOD (COMMON)
 # ============================================================
 
@@ -399,7 +406,7 @@ if any(len(v) > 0 for v in dropped.values()):
 
 
 # ============================================================
-# RUN BOTH SCENARIOS
+# RUN BOTH SCENARIOS (✅ sadece butona basınca hesapla)
 # ============================================================
 
 run = st.button("Run BOTH Scenarios (Reference + Scenario 2)")
@@ -443,15 +450,58 @@ if run:
     ref_df = add_cost_columns(ref_out, fx_rate=ref_params["fx_rate"])
     sc2_df = add_cost_columns(sc2_out, fx_rate=sc2_params["fx_rate"])
 
+    # ✅ SONUÇLARI CACHE'LE (fuel filter değişince yeniden hesap yapmayacak)
+    st.session_state["ref_df"] = ref_df
+    st.session_state["sc2_df"] = sc2_df
+    st.session_state["ref_bm_map"] = ref_bm_map or {}
+    st.session_state["sc2_bm_map"] = sc2_bm_map or {}
+    st.session_state["ref_price"] = float(ref_price)
+    st.session_state["sc2_price"] = float(sc2_price)
+
+    st.session_state["params_ref_saved"] = {
+        **ref_params,
+        "benchmark_method": benchmark_method_code,
+        "benchmark_top_pct": int(benchmark_top_pct),
+        "scope_dg": scope_dg,
+        "scope_import": scope_import,
+        "scope_lignite": scope_lignite,
+    }
+    st.session_state["params_sc2_saved"] = {
+        **sc2_params,
+        "benchmark_method": benchmark_method_code,
+        "benchmark_top_pct": int(benchmark_top_pct),
+        "scope_dg": scope_dg,
+        "scope_import": scope_import,
+        "scope_lignite": scope_lignite,
+    }
+
+    st.session_state["has_results"] = True
+
+
+# ============================================================
+# DISPLAY RESULTS (✅ fuel filter sadece filtreler; run gerekmez)
+# ============================================================
+
+if st.session_state.get("has_results", False):
+    # Cache'ten al
+    ref_df = st.session_state["ref_df"]
+    sc2_df = st.session_state["sc2_df"]
+    ref_bm_map = st.session_state.get("ref_bm_map", {})
+    sc2_bm_map = st.session_state.get("sc2_bm_map", {})
+    ref_price = st.session_state.get("ref_price", np.nan)
+    sc2_price = st.session_state.get("sc2_price", np.nan)
+    params_ref_saved = st.session_state.get("params_ref_saved", {})
+    params_sc2_saved = st.session_state.get("params_sc2_saved", {})
+
     # -------------------------
     # HEADLINE
     # -------------------------
     st.subheader("Scenario headline results")
     h1, h2, h3 = st.columns(3)
     with h1:
-        kpi_card("Reference carbon price", f"{ref_price:.2f} €/tCO₂", ref_params["price_method"])
+        kpi_card("Reference carbon price", f"{ref_price:.2f} €/tCO₂", params_ref_saved.get("price_method", ""))
     with h2:
-        kpi_card("Scenario 2 carbon price", f"{sc2_price:.2f} €/tCO₂", sc2_params["price_method"])
+        kpi_card("Scenario 2 carbon price", f"{sc2_price:.2f} €/tCO₂", params_sc2_saved.get("price_method", ""))
     with h3:
         kpi_card("Δ Price (Sc2 - Ref)", f"{(sc2_price - ref_price):+.2f} €/tCO₂", "difference")
 
@@ -483,8 +533,8 @@ if run:
             return "Lignite"
         return "Other"
 
-    ref_df2 = _ensure_tl_per_mwh(ref_df, ref_params["fx_rate"])
-    sc2_df2 = _ensure_tl_per_mwh(sc2_df, sc2_params["fx_rate"])
+    ref_df2 = _ensure_tl_per_mwh(ref_df, params_ref_saved.get("fx_rate", DEFAULTS["fx_rate"]))
+    sc2_df2 = _ensure_tl_per_mwh(sc2_df, params_sc2_saved.get("fx_rate", DEFAULTS["fx_rate"]))
 
     # Comparison base (FuelType'ı da taşı)
     base_cols = ["Plant"]
@@ -509,7 +559,7 @@ if run:
 
     # -------- Fuel filter (grafiğin üstünde) --------
     fuel_options = ["All", "Natural Gas", "Imported Coal", "Lignite", "Other"]
-    fuel_choice = st.selectbox("Fuel filter", fuel_options, index=0)
+    fuel_choice = st.selectbox("Fuel filter", fuel_options, index=0, key="fuel_filter_choice")
 
     plot_df = comp.copy()
     if fuel_choice != "All":
@@ -586,22 +636,8 @@ if run:
         comp_df=comp.drop(columns=["absΔ"], errors="ignore"),
         bm_map_ref=ref_bm_map or {},
         bm_map_sc2=sc2_bm_map or {},
-        params_ref={
-            **ref_params,
-            "benchmark_method": benchmark_method_code,
-            "benchmark_top_pct": int(benchmark_top_pct),
-            "scope_dg": scope_dg,
-            "scope_import": scope_import,
-            "scope_lignite": scope_lignite,
-        },
-        params_sc2={
-            **sc2_params,
-            "benchmark_method": benchmark_method_code,
-            "benchmark_top_pct": int(benchmark_top_pct),
-            "scope_dg": scope_dg,
-            "scope_import": scope_import,
-            "scope_lignite": scope_lignite,
-        },
+        params_ref=params_ref_saved,
+        params_sc2=params_sc2_saved,
     )
 
     st.download_button(
@@ -610,5 +646,6 @@ if run:
         file_name="ets_scenario_comparison.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
 else:
     st.info("Dosyayı yükleyin ve 'Run BOTH Scenarios' butonuna basın.")
