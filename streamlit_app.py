@@ -1,26 +1,17 @@
 # ============================================================
-# ETS GELİŞTİRME MODÜLÜ V001 – FINAL (Infographic + Word Note)
+# ETS GELİŞTİRME MODÜLÜ – SCENARIO COMPARISON (Reference vs Scenario 2)
 # ============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 
-from datetime import datetime
 from io import BytesIO
 
-from docx import Document
-from docx.shared import Inches, Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-
-from openpyxl.chart import LineChart, BarChart, Reference
-from openpyxl.chart.label import DataLabelList
-
 from ets_model import ets_hesapla
-from data_cleaning import clean_ets_input, filter_intensity_outliers_by_fuel
+from data_cleaning import clean_ets_input
 
 
 # ============================================================
@@ -34,19 +25,12 @@ DEFAULTS = {
     "slope_bid": 150,
     "slope_ask": 150,
     "spread": 1.0,
-    "do_clean": False,
-    "lower_pct": 1.0,
-    "upper_pct": 2.0,
-    "fx_rate": 50.0,  # <<< EURO KURU SABİT 50 TL
+    "fx_rate": 50.0,
     "trf": 0.0,
 }
 
-st.set_page_config(
-    page_title="ETS Geliştirme Modülü V002",
-    layout="wide"
-)
-
-st.title("ETS Geliştirme Modülü v002")
+st.set_page_config(page_title="ETS Geliştirme Modülü – Scenario Compare", layout="wide")
+st.title("ETS Geliştirme Modülü – Scenario Comparison (Reference vs Scenario 2)")
 
 
 # ============================================================
@@ -96,132 +80,9 @@ def kpi_card(label, value, sub=""):
 
 
 # ============================================================
-# SIDEBAR – PARAMETERS
+# HELPERS
 # ============================================================
-st.sidebar.header("Model Parametreleri")
-
-price_min, price_max = st.sidebar.slider(
-    "Karbon Fiyat Aralığı (€/tCO₂)",
-    0, 200,
-    st.session_state.get("price_range", DEFAULTS["price_range"]),
-    step=1,
-    key="price_range"
-)
-
-agk = st.sidebar.slider(
-    "Adil Geçiş Katsayısı (AGK)",
-    0.0, 1.0,
-    float(st.session_state.get("agk", DEFAULTS["agk"])),
-    step=0.05,
-    key="agk"
-)
-
-# -------------------------
-# Benchmark belirleme yöntemi
-# -------------------------
-benchmark_method = st.sidebar.selectbox(
-    "Benchmark belirleme yöntemi",
-    [
-        "Üretim ağırlıklı benchmark",
-        "Kurulu güç ağırlıklı benchmark",
-        "En iyi tesis dilimi (üretim payı)",
-    ],
-    index=0,
-    key="benchmark_method",
-    help="Benchmark (B_fuel) yakıt bazında hesaplanır. Seçilen yöntem, B_fuel'in nasıl belirleneceğini tanımlar.",
-)
-st.sidebar.caption("Not: Kurulu güç ağırlıklı yöntemde Excel'de InstalledCapacity_MW kolonu gerekir.")
-
-# Yönteme bağlı parametre: En iyi tesis dilimi (%)
-benchmark_top_pct = int(st.session_state.get("benchmark_top_pct", DEFAULTS.get("benchmark_top_pct", 100)))
-if benchmark_method == "En iyi tesis dilimi (üretim payı)":
-    benchmark_top_pct = st.sidebar.select_slider(
-        "En iyi tesis dilimi (%)",
-        options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-        value=int(st.session_state.get("benchmark_top_pct", DEFAULTS.get("benchmark_top_pct", 100))),
-        key="benchmark_top_pct",
-        help="Yakıt grubu içinde intensity düşük olanlardan başlayarak toplam üretimin belirtilen yüzdesine kadar olan dilim seçilir; benchmark bu dilimin üretim-ağırlıklı ortalamasıdır.",
-    )
-else:
-    st.session_state["benchmark_top_pct"] = 100
-    benchmark_top_pct = 100
-
-# -------------------------
-# Price method
-# -------------------------
-price_method = st.sidebar.selectbox(
-    "Fiyat Hesaplama Yöntemi",
-    ["Market Clearing", "Average Compliance Cost", "Auction Clearing"],
-    index=0
-)
-
-# Auction slider only when Auction Clearing selected
-auction_supply_share = 1.0
-if price_method == "Auction Clearing":
-    auction_supply_share = st.sidebar.slider(
-        "Auction supply (% of total demand)",
-        min_value=10,
-        max_value=200,
-        value=100,
-        step=10,
-        help="Compliance demand (net ETS > 0) sabit kabul edilir. Auction supply toplam talebin yüzdesi kadar arzı ifade eder. "
-             "100% = demand kadar arz; <100% kıtlık; >100% bolluk."
-    ) / 100.0
-
-slope_bid = st.sidebar.slider("Talep Eğimi (β_bid)", 10, 500, DEFAULTS["slope_bid"], step=10)
-slope_ask = st.sidebar.slider("Arz Eğimi (β_ask)", 10, 500, DEFAULTS["slope_ask"], step=10)
-spread = st.sidebar.slider("Bid/Ask Spread", 0.0, 10.0, DEFAULTS["spread"], step=0.5)
-
-fx_rate = st.sidebar.number_input(
-    "Euro Kuru (TL/€)",
-    min_value=0.0,
-    value=float(DEFAULTS["fx_rate"]),
-    step=1.0
-)
-
-trf = st.sidebar.slider(
-    "Geçiş Dönemi Telafi Katsayısı (TRF)",
-    min_value=0.0,
-    max_value=1.0,
-    value=float(DEFAULTS.get("trf", 0.0)),
-    step=0.05,
-    help="Pilot dönemde, benchmark nedeniyle oluşan ilave yükün ne kadarının ücretsiz telafi edileceğini gösterir. "
-         "TRF=0 → telafi yok; TRF=1 → (I−B) farkının tamamı telafi edilir (sadece I>B olan tesisler için)."
-)
-
-# UI'daki Türkçe seçimi, ets_model.ets_hesapla'nın beklediği koda çevir
-BENCHMARK_METHOD_MAP = {
-    "Üretim ağırlıklı benchmark": "generation_weighted",
-    "Kurulu güç ağırlıklı benchmark": "capacity_weighted",
-    "En iyi tesis dilimi (üretim payı)": "best_plants",
-}
-benchmark_method_code = BENCHMARK_METHOD_MAP.get(benchmark_method, "best_plants")
-
-# ============================================================
-# BENCHMARK SCOPE (OPTIONAL FILTERING BY FUEL GROUP)
-# ============================================================
-st.sidebar.subheader("Benchmark scope (by fuel)")
-
-SCOPE_OPTIONS = [
-    "Include all plants",
-    "Exclude 5 plants with LOWEST EI",
-    "Exclude 5 plants with HIGHEST EI",
-]
-
-scope_dg = st.sidebar.selectbox("DG Plants", SCOPE_OPTIONS, index=0, key="scope_dg")
-scope_import = st.sidebar.selectbox("Imported Coal Plants", SCOPE_OPTIONS, index=0, key="scope_import")
-scope_lignite = st.sidebar.selectbox("Lignite Plants", SCOPE_OPTIONS, index=0, key="scope_lignite")
-
-
-# ============================================================
-# FILE UPLOAD
-# ============================================================
-uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
-if uploaded is None:
-    st.info("Lütfen Excel dosyası yükleyin.")
-    st.stop()
-
-def read_all_sheets(file):
+def read_all_sheets(file) -> pd.DataFrame:
     xls = pd.ExcelFile(file)
     frames = []
     for sh in xls.sheet_names:
@@ -230,12 +91,6 @@ def read_all_sheets(file):
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
 
-df_all_raw = read_all_sheets(uploaded)
-df_all = clean_ets_input(df_all_raw)
-
-# ============================================================
-# APPLY SCOPE FILTER (DROPS PLANTS FROM CALCULATION IF CHOSEN)
-# ============================================================
 def _fuel_group_of(ft: str) -> str:
     s = str(ft).strip().lower()
     if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
@@ -253,13 +108,9 @@ def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
     if dfg.empty:
         return df, []
 
-    agg = (
-        dfg.groupby("Plant", as_index=False)[["Emissions_tCO2", "Generation_MWh"]]
-        .sum()
-    )
+    agg = dfg.groupby("Plant", as_index=False)[["Emissions_tCO2", "Generation_MWh"]].sum()
     agg["EI"] = agg["Emissions_tCO2"] / agg["Generation_MWh"].replace(0, np.nan)
     agg = agg.dropna(subset=["EI"])
-
     if agg.empty:
         return df, []
 
@@ -270,13 +121,231 @@ def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
     df2 = df[~(mask_group & df["Plant"].isin(picks))].copy()
     return df2, picks
 
+
+def add_cost_columns(df_in: pd.DataFrame, fx_rate: float, clearing_price: float) -> pd.DataFrame:
+    df = df_in.copy()
+
+    # capacity merge safety (if missing)
+    if "InstalledCapacity_MW" not in df.columns:
+        df["InstalledCapacity_MW"] = np.nan
+
+    # TL/MWh
+    if "ets_net_cashflow_€/MWh" in df.columns:
+        df["ets_net_cashflow_TL/MWh"] = pd.to_numeric(df["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx_rate)
+
+    # Total €
+    if "net_ets" in df.columns:
+        df["ets_net_cashflow_€"] = pd.to_numeric(df["net_ets"], errors="coerce") * float(clearing_price)
+        df["ets_net_cashflow_TL"] = df["ets_net_cashflow_€"] * float(fx_rate)
+
+    # fallback TL/MWh from totals
+    if "ets_net_cashflow_TL/MWh" not in df.columns and "ets_net_cashflow_TL" in df.columns and "Generation_MWh" in df.columns:
+        gen = pd.to_numeric(df["Generation_MWh"], errors="coerce").replace(0, np.nan)
+        df["ets_net_cashflow_TL/MWh"] = df["ets_net_cashflow_TL"] / gen
+
+    # reorder: Plant then InstalledCapacity_MW
+    cols = list(df.columns)
+    if "Plant" in cols and "InstalledCapacity_MW" in cols:
+        cols.remove("InstalledCapacity_MW")
+        plant_idx = cols.index("Plant")
+        cols.insert(plant_idx + 1, "InstalledCapacity_MW")
+        df = df[cols]
+
+    return df
+
+
+def to_excel_bytes(ref_df: pd.DataFrame,
+                   sc2_df: pd.DataFrame,
+                   comp_df: pd.DataFrame,
+                   bm_map_ref: dict,
+                   bm_map_sc2: dict,
+                   params_ref: dict,
+                   params_sc2: dict) -> bytes:
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        ref_df.to_excel(writer, index=False, sheet_name="Results_Reference")
+        sc2_df.to_excel(writer, index=False, sheet_name="Results_Scenario2")
+        comp_df.to_excel(writer, index=False, sheet_name="Comparison")
+
+        # Benchmarks
+        if isinstance(bm_map_ref, dict) and len(bm_map_ref) > 0:
+            pd.DataFrame([{"FuelType": k, "Benchmark_Reference": v} for k, v in bm_map_ref.items()]) \
+              .to_excel(writer, index=False, sheet_name="Benchmarks_Ref")
+        if isinstance(bm_map_sc2, dict) and len(bm_map_sc2) > 0:
+            pd.DataFrame([{"FuelType": k, "Benchmark_Scenario2": v} for k, v in bm_map_sc2.items()]) \
+              .to_excel(writer, index=False, sheet_name="Benchmarks_Sc2")
+
+        # Params
+        pd.DataFrame([params_ref]).to_excel(writer, index=False, sheet_name="Params_Ref")
+        pd.DataFrame([params_sc2]).to_excel(writer, index=False, sheet_name="Params_Sc2")
+
+    return out.getvalue()
+
+
+# ============================================================
+# SIDEBAR – GLOBAL SETTINGS (common for both scenarios)
+# ============================================================
+st.sidebar.header("Global Settings (apply to both scenarios)")
+
+# Benchmark method (common)
+benchmark_method_ui = st.sidebar.selectbox(
+    "Benchmark belirleme yöntemi (common)",
+    [
+        "Üretim ağırlıklı benchmark",
+        "Kurulu güç ağırlıklı benchmark",
+        "En iyi tesis dilimi (üretim payı)",
+    ],
+    index=0,
+    key="benchmark_method_common",
+    help="Benchmark (B_fuel) yakıt bazında hesaplanır. Seçilen yöntem, B_fuel'in nasıl belirleneceğini tanımlar.",
+)
+st.sidebar.caption("Not: Kurulu güç ağırlıklı yöntemde Excel'de InstalledCapacity_MW kolonu gerekir.")
+
+BENCHMARK_METHOD_MAP = {
+    "Üretim ağırlıklı benchmark": "generation_weighted",
+    "Kurulu güç ağırlıklı benchmark": "capacity_weighted",
+    "En iyi tesis dilimi (üretim payı)": "best_plants",
+}
+benchmark_method_code = BENCHMARK_METHOD_MAP.get(benchmark_method_ui, "best_plants")
+
+benchmark_top_pct = 100
+if benchmark_method_ui == "En iyi tesis dilimi (üretim payı)":
+    benchmark_top_pct = st.sidebar.select_slider(
+        "En iyi tesis dilimi (%) (common)",
+        options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        value=int(st.session_state.get("benchmark_top_pct_common", DEFAULTS["benchmark_top_pct"])),
+        key="benchmark_top_pct_common",
+        help="Yakıt grubu içinde intensity düşük olanlardan başlayarak toplam üretimin belirtilen yüzdesine kadar olan dilim seçilir; benchmark bu dilimin üretim-ağırlıklı ortalamasıdır.",
+    )
+else:
+    st.session_state["benchmark_top_pct_common"] = 100
+    benchmark_top_pct = 100
+
+
+# Scope controls (common)
+st.sidebar.subheader("Benchmark scope (common, by fuel)")
+SCOPE_OPTIONS = [
+    "Include all plants",
+    "Exclude 5 plants with LOWEST EI",
+    "Exclude 5 plants with HIGHEST EI",
+]
+scope_dg = st.sidebar.selectbox("DG Plants", SCOPE_OPTIONS, index=0, key="scope_dg")
+scope_import = st.sidebar.selectbox("Imported Coal Plants", SCOPE_OPTIONS, index=0, key="scope_import")
+scope_lignite = st.sidebar.selectbox("Lignite Plants", SCOPE_OPTIONS, index=0, key="scope_lignite")
+
+
+# ============================================================
+# SIDEBAR – SCENARIO PARAMETERS (Reference vs Scenario 2)
+# ============================================================
+st.sidebar.header("Scenario Parameters")
+
+tabs = st.sidebar.tabs(["Reference", "Scenario 2"])
+
+def scenario_controls(prefix: str, default_overrides: dict = None):
+    d = DEFAULTS.copy()
+    if default_overrides:
+        d.update(default_overrides)
+
+    with st.sidebar:
+        pass
+
+    # controls inside the active tab (caller context)
+    price_min, price_max = st.slider(
+        f"Karbon Fiyat Aralığı (€/tCO₂) [{prefix}]",
+        0, 200,
+        st.session_state.get(f"{prefix}_price_range", d["price_range"]),
+        step=1,
+        key=f"{prefix}_price_range"
+    )
+
+    agk = st.slider(
+        f"Adil Geçiş Katsayısı (AGK) [{prefix}]",
+        0.0, 1.0,
+        float(st.session_state.get(f"{prefix}_agk", d["agk"])),
+        step=0.05,
+        key=f"{prefix}_agk"
+    )
+
+    price_method = st.selectbox(
+        f"Fiyat Hesaplama Yöntemi [{prefix}]",
+        ["Market Clearing", "Average Compliance Cost", "Auction Clearing"],
+        index=0 if d["price_method"] == "Market Clearing" else (1 if d["price_method"] == "Average Compliance Cost" else 2),
+        key=f"{prefix}_price_method"
+    )
+
+    auction_supply_share = 1.0
+    if price_method == "Auction Clearing":
+        auction_supply_share = st.slider(
+            f"Auction supply (% of total demand) [{prefix}]",
+            min_value=10,
+            max_value=200,
+            value=int(st.session_state.get(f"{prefix}_auction_supply_pct", 100)),
+            step=10,
+            key=f"{prefix}_auction_supply_pct",
+            help="Demand inelastic varsayımıyla, arzı toplam talebin yüzdesi olarak ayarlar."
+        ) / 100.0
+
+    slope_bid = st.slider(f"Talep Eğimi (β_bid) [{prefix}]", 10, 500, int(d["slope_bid"]), step=10, key=f"{prefix}_slope_bid")
+    slope_ask = st.slider(f"Arz Eğimi (β_ask) [{prefix}]", 10, 500, int(d["slope_ask"]), step=10, key=f"{prefix}_slope_ask")
+    spread = st.slider(f"Bid/Ask Spread [{prefix}]", 0.0, 10.0, float(d["spread"]), step=0.5, key=f"{prefix}_spread")
+
+    fx_rate = st.number_input(
+        f"Euro Kuru (TL/€) [{prefix}]",
+        min_value=0.0,
+        value=float(st.session_state.get(f"{prefix}_fx_rate", d["fx_rate"])),
+        step=1.0,
+        key=f"{prefix}_fx_rate"
+    )
+
+    trf = st.slider(
+        f"Geçiş Dönemi Telafi Katsayısı (TRF) [{prefix}]",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(st.session_state.get(f"{prefix}_trf", d["trf"])),
+        step=0.05,
+        key=f"{prefix}_trf"
+    )
+
+    return {
+        "price_min": price_min,
+        "price_max": price_max,
+        "agk": agk,
+        "price_method": price_method,
+        "auction_supply_share": float(auction_supply_share),
+        "slope_bid": slope_bid,
+        "slope_ask": slope_ask,
+        "spread": spread,
+        "fx_rate": float(fx_rate),
+        "trf": float(trf),
+    }
+
+with tabs[0]:
+    ref_params = scenario_controls("REF")
+
+with tabs[1]:
+    sc2_params = scenario_controls("SC2")
+
+
+# ============================================================
+# FILE UPLOAD
+# ============================================================
+uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
+if uploaded is None:
+    st.info("Lütfen Excel dosyası yükleyin.")
+    st.stop()
+
+df_all_raw = read_all_sheets(uploaded)
+df_all = clean_ets_input(df_all_raw)
+
+
+# ============================================================
+# APPLY COMMON SCOPE FILTER
+# ============================================================
 df_scoped = df_all.copy()
 dropped = {"DG": [], "IMPORT_COAL": [], "LIGNITE": []}
-
-df_scoped, dropped["DG"] = _apply_scope(df_scoped, "DG", st.session_state.get("scope_dg", "Include all plants"))
-df_scoped, dropped["IMPORT_COAL"] = _apply_scope(df_scoped, "IMPORT_COAL", st.session_state.get("scope_import", "Include all plants"))
-df_scoped, dropped["LIGNITE"] = _apply_scope(df_scoped, "LIGNITE", st.session_state.get("scope_lignite", "Include all plants"))
-
+df_scoped, dropped["DG"] = _apply_scope(df_scoped, "DG", scope_dg)
+df_scoped, dropped["IMPORT_COAL"] = _apply_scope(df_scoped, "IMPORT_COAL", scope_import)
+df_scoped, dropped["LIGNITE"] = _apply_scope(df_scoped, "LIGNITE", scope_lignite)
 df_all = df_scoped
 
 if any(len(v) > 0 for v in dropped.values()):
@@ -289,472 +358,146 @@ if any(len(v) > 0 for v in dropped.values()):
         st.sidebar.write("Lignite:", ", ".join(dropped["LIGNITE"]))
 
 
-
 # ============================================================
-# RUN MODEL
+# RUN BOTH SCENARIOS
 # ============================================================
-if st.button("Run ETS Model"):
+run = st.button("Run BOTH Scenarios (Reference + Scenario 2)")
 
-    sonuc_df, benchmark_map, clearing_price = ets_hesapla(
+if run:
+    # --- Reference ---
+    ref_out, ref_bm_map, ref_price = ets_hesapla(
         df_all,
-        price_min,
-        price_max,
-        agk,
-        slope_bid=slope_bid,
-        slope_ask=slope_ask,
-        spread=spread,
+        ref_params["price_min"],
+        ref_params["price_max"],
+        ref_params["agk"],
+        slope_bid=ref_params["slope_bid"],
+        slope_ask=ref_params["slope_ask"],
+        spread=ref_params["spread"],
         benchmark_method=benchmark_method_code,
         benchmark_top_pct=int(benchmark_top_pct),
         cap_col="InstalledCapacity_MW",
-        price_method=price_method,
-        trf=float(trf),
-        auction_supply_share=float(auction_supply_share),
+        price_method=ref_params["price_method"],
+        trf=float(ref_params["trf"]),
+        auction_supply_share=float(ref_params["auction_supply_share"]),
     )
 
-    st.success(f"Carbon Price: {clearing_price:.2f} €/tCO₂")
-
-    # ========================================================
-    # INFOGRAPHIC KPI ROW
-    # ========================================================
-    total_gen = df_all["Generation_MWh"].sum()
-    total_capacity = df_all["InstalledCapacity_MW"].sum()
-    total_emis = df_all["Emissions_tCO2"].sum() / 1e6
-
-    if "ets_net_cashflow_€/MWh" in sonuc_df.columns:
-        avg_tl_mwh = (
-            (sonuc_df["ets_net_cashflow_€/MWh"] * fx_rate * sonuc_df["Generation_MWh"]).sum()
-            / sonuc_df["Generation_MWh"].sum()
-        )
-    else:
-        avg_tl_mwh = np.nan
-
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-
-    with c1:
-        kpi_card("Electricity Generation", f"{total_gen:,.0f} MWh", "2024")
-    with c2:
-        kpi_card("Installed Capacity (KG)", f"{total_capacity:,.0f} MW", "Toplam")
-    with c3:
-        kpi_card("Total Emissions", f"{total_emis:,.2f} MtCO₂", "2024")
-    with c4:
-        kpi_card("Carbon Price", f"{clearing_price:.2f} €/tCO₂", price_method)
-    with c5:
-        kpi_card("FX Rate", f"{fx_rate:.0f} TL/€", "Scenario")
-    with c6:
-        kpi_card("Avg ETS Impact", f"{avg_tl_mwh:,.2f} TL/MWh", "Gen.-weighted")
-
-
-    # ========================================================
-    # IEA VISUALS – Market Summary / Price formation / Bid-Ask / Benchmark Distribution
-    # ========================================================
-    st.subheader("IEA-style market visuals")
-
-    # ---------- 1) Market summary cards ----------
-    demand_tco2 = float(sonuc_df.loc[sonuc_df["net_ets"] > 0, "net_ets"].sum())
-    if price_method == "Auction Clearing":
-        supply_tco2 = demand_tco2 * float(auction_supply_share)
-        supply_label = "Auction supply"
-    else:
-        supply_tco2 = float((-sonuc_df.loc[sonuc_df["net_ets"] < 0, "net_ets"]).sum())
-        supply_label = "Available supply (surplus)"
-
-    traded_tco2 = float(min(demand_tco2, supply_tco2)) if (demand_tco2 > 0 and supply_tco2 > 0) else 0.0
-    shortage_tco2 = float(max(demand_tco2 - supply_tco2, 0.0))
-    shortage_pct = (shortage_tco2 / demand_tco2 * 100.0) if demand_tco2 > 0 else 0.0
-
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        kpi_card("Compliance demand", f"{demand_tco2:,.0f} tCO₂", "Σ(net_ets > 0)")
-    with s2:
-        kpi_card(supply_label, f"{supply_tco2:,.0f} tCO₂", "Policy / surplus based")
-    with s3:
-        kpi_card("Traded volume", f"{traded_tco2:,.0f} tCO₂", "min(demand, supply)")
-    with s4:
-        kpi_card("Shortage", f"{shortage_tco2:,.0f} tCO₂", f"{shortage_pct:.1f}% of demand")
-
-    st.caption("Note: In Auction Clearing, demand is assumed inelastic and supply is set as a share of total compliance demand.")
-
-
-    # ---------- Price formation helpers ----------
-    def _demand_at_price(buyers_df: pd.DataFrame, p: float, pmin: float) -> float:
-        if buyers_df.empty:
-            return 0.0
-        q0 = buyers_df["net_ets"].to_numpy(dtype=float)
-        p_bid = buyers_df["p_bid"].to_numpy(dtype=float)
-        denom = np.maximum(p_bid - pmin, 1e-9)
-        frac = 1.0 - (p - pmin) / denom
-        return float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
-
-    def _supply_at_price(sellers_df: pd.DataFrame, p: float, pmax: float) -> float:
-        if sellers_df.empty:
-            return 0.0
-        q0 = (-sellers_df["net_ets"]).to_numpy(dtype=float)
-        p_ask = sellers_df["p_ask"].to_numpy(dtype=float)
-        denom = np.maximum(pmax - p_ask, 1e-9)
-        frac = (p - p_ask) / denom
-        return float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
-
-
-    # ---------- Price formation chart ----------
-    with st.expander("Price formation (how the carbon price is formed)", expanded=True):
-        buyers = sonuc_df.loc[sonuc_df["net_ets"] > 0, ["net_ets", "p_bid"]].copy()
-        sellers = sonuc_df.loc[sonuc_df["net_ets"] < 0, ["net_ets", "p_ask"]].copy()
-
-        fig_pf = go.Figure()
-
-        if price_method == "Market Clearing":
-            if not buyers.empty:
-                b = buyers.sort_values("p_bid", ascending=False).copy()
-                b["cum_q"] = b["net_ets"].cumsum()
-                fig_pf.add_trace(go.Scatter(
-                    x=b["cum_q"], y=b["p_bid"],
-                    mode="lines", name="Demand curve (bids)"
-                ))
-
-            if not sellers.empty:
-                s = sellers.sort_values("p_ask", ascending=True).copy()
-                s["supply_q"] = (-s["net_ets"]).astype(float)
-                s["cum_q"] = s["supply_q"].cumsum()
-                fig_pf.add_trace(go.Scatter(
-                    x=s["cum_q"], y=s["p_ask"],
-                    mode="lines", name="Supply curve (asks)"
-                ))
-
-            qd = _demand_at_price(buyers, float(clearing_price), float(price_min))
-            qs = _supply_at_price(sellers, float(clearing_price), float(price_max))
-            q_star = float(min(qd, qs))
-
-            fig_pf.add_hline(
-                y=float(clearing_price),
-                line_dash="dash",
-                annotation_text=f"Clearing price: {clearing_price:.2f} €/tCO₂",
-                annotation_position="top left",
-            )
-            fig_pf.add_vline(
-                x=q_star,
-                line_dash="dash",
-                annotation_text=f"Traded volume: {q_star:,.0f} tCO₂",
-                annotation_position="top right",
-            )
-
-            subtitle = "Market Clearing: price is where available supply meets compliance demand (intersection)."
-
-        elif price_method == "Auction Clearing":
-            if buyers.empty:
-                st.info("No buyers (net_ets > 0) in the current scope — cannot draw auction price formation.")
-                subtitle = "Auction Clearing: insufficient buyers in current scope."
-            else:
-                demand = float(buyers["net_ets"].sum())
-                supply = float(demand * float(auction_supply_share))
-
-                b = buyers.sort_values("p_bid", ascending=False).copy()
-                b["cum_q"] = b["net_ets"].cumsum()
-
-                fig_pf.add_trace(go.Scatter(
-                    x=b["cum_q"], y=b["p_bid"],
-                    mode="lines", name="Bid stack (descending bids)"
-                ))
-
-                fig_pf.add_vline(
-                    x=supply,
-                    line_dash="dash",
-                    annotation_text=f"Auction supply: {supply:,.0f} tCO₂",
-                    annotation_position="top right",
-                )
-                fig_pf.add_hline(
-                    y=float(clearing_price),
-                    line_dash="dash",
-                    annotation_text=f"Clearing price: {clearing_price:.2f} €/tCO₂",
-                    annotation_position="top left",
-                )
-
-                subtitle = "Auction Clearing: fixed supply is sold to highest bids; marginal winning bid sets the price."
-
-        else:  # Average Compliance Cost
-            if buyers.empty:
-                st.info("No buyers (net_ets > 0) in the current scope — cannot draw ACC price formation.")
-                subtitle = "Average Compliance Cost: insufficient buyers in current scope."
-            else:
-                b = buyers.sort_values("p_bid", ascending=False).copy()
-                b["cum_q"] = b["net_ets"].cumsum()
-
-                fig_pf.add_trace(go.Scatter(
-                    x=b["cum_q"], y=b["p_bid"],
-                    mode="lines", name="Bid stack (buyers)"
-                ))
-                fig_pf.add_hline(
-                    y=float(clearing_price),
-                    line_dash="dash",
-                    annotation_text=f"ACC price: {clearing_price:.2f} €/tCO₂",
-                    annotation_position="top left",
-                )
-
-                subtitle = "Average Compliance Cost: price is the demand-weighted average of buyers’ bids (no strict intersection)."
-
-        fig_pf.update_layout(
-            template="simple_white",
-            height=460,
-            margin=dict(l=10, r=10, t=40, b=10),
-            legend_orientation="h",
-            legend_y=1.08,
-            legend_x=0.01,
-            xaxis_title="Allowances (tCO₂)",
-            yaxis_title="Price (€/tCO₂)",
-        )
-        fig_pf.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
-        fig_pf.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
-
-        st.plotly_chart(fig_pf, use_container_width=True)
-        st.caption(subtitle)
-
-
-    # ---------- 2) Bid–Ask curves + clearing price ----------
-    with st.expander("Bid–Ask curves and clearing price", expanded=True):
-        buyers = sonuc_df.loc[sonuc_df["net_ets"] > 0, ["net_ets", "p_bid"]].copy()
-        sellers = sonuc_df.loc[sonuc_df["net_ets"] < 0, ["net_ets", "p_ask"]].copy()
-
-        if buyers.empty:
-            st.info("No buyers (net_ets > 0) in the current scope — bid curve not available.")
-        else:
-            buyers = buyers.sort_values("p_bid", ascending=False)
-            buyers["cum_q"] = buyers["net_ets"].cumsum()
-
-            fig_curves = px.line(
-                buyers,
-                x="cum_q",
-                y="p_bid",
-                template="simple_white",
-                labels={"cum_q": "Allowances (tCO₂)", "p_bid": "Price (€/tCO₂)"},
-            )
-            fig_curves.update_traces(name="Demand (bids)")
-
-            if not sellers.empty:
-                sellers = sellers.sort_values("p_ask", ascending=True)
-                sellers["supply_q"] = (-sellers["net_ets"]).astype(float)
-                sellers["cum_q"] = sellers["supply_q"].cumsum()
-
-                fig_s = px.line(
-                    sellers,
-                    x="cum_q",
-                    y="p_ask",
-                    template="simple_white",
-                    labels={"cum_q": "Allowances (tCO₂)", "p_ask": "Price (€/tCO₂)"},
-                )
-                fig_s.update_traces(name="Supply (asks)")
-                for tr in fig_s.data:
-                    fig_curves.add_trace(tr)
-
-            fig_curves.add_hline(
-                y=float(clearing_price),
-                line_dash="dash",
-                line_color="black",
-                annotation_text=f"Clearing: {clearing_price:.2f} €/tCO₂",
-                annotation_position="top left",
-            )
-
-            fig_curves.update_layout(
-                height=420,
-                legend_orientation="h",
-                legend_y=1.08,
-                legend_x=0.01,
-                margin=dict(l=10, r=10, t=40, b=10),
-            )
-            fig_curves.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
-            fig_curves.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
-
-            st.plotly_chart(fig_curves, use_container_width=True)
-
-    # ---------- 3) Fuel-wise intensity distribution + benchmark ----------
-    with st.expander("Emission intensity distribution vs benchmark (by fuel)", expanded=True):
-        if "intensity" not in sonuc_df.columns:
-            st.warning("Model output does not contain 'intensity' column — cannot draw distribution.")
-        else:
-            fig_box = px.box(
-                sonuc_df,
-                x="FuelType",
-                y="intensity",
-                points="all",
-                template="simple_white",
-                labels={"FuelType": "", "intensity": "tCO₂ / MWh"},
-            )
-            fig_box.update_layout(
-                height=520,
-                margin=dict(l=10, r=10, t=40, b=10),
-                showlegend=False,
-            )
-            fig_box.update_xaxes(showgrid=False)
-            fig_box.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
-
-            for fuel, b in (benchmark_map or {}).items():
-                try:
-                    b_val = float(b)
-                except Exception:
-                    continue
-                if np.isfinite(b_val):
-                    fig_box.add_hline(
-                        y=b_val,
-                        line_dash="dash",
-                        line_color="black",
-                        opacity=0.55,
-                        annotation_text=f"{fuel} benchmark",
-                        annotation_position="top left",
-                    )
-
-            st.plotly_chart(fig_box, use_container_width=True)
-
-            st.caption(
-                "How to read: Each box shows the distribution of plant-level emission intensities (tCO₂/MWh) within a fuel group. "
-                "The line inside the box is the median; the box spans the 25th–75th percentiles; dots are individual plants "
-                "(outliers may appear as isolated points). "
-                "The dashed horizontal line is the fuel-specific benchmark (B_fuel). "
-                "Plants above the benchmark are net buyers (higher ETS cost), while plants below the benchmark are net sellers "
-                "(potential surplus)."
-            )
-
-    st.divider()
-
-    # ========================================================
-    # INFOGRAPHIC – SINGLE CLEAN CHART
-    # ========================================================
-    st.subheader("Santral Bazlı Net ETS Etkisi (TL/MWh)")
-
-    df_plot = sonuc_df.copy()
-    df_plot["TL_per_MWh"] = df_plot["ets_net_cashflow_€/MWh"] * fx_rate
-    df_plot = df_plot.sort_values("TL_per_MWh")
-
-    df_plot["Impact_Type"] = np.where(
-        df_plot["TL_per_MWh"] >= 0,
-        "Cost increase",
-        "Cost reduction",
+    # --- Scenario 2 ---
+    sc2_out, sc2_bm_map, sc2_price = ets_hesapla(
+        df_all,
+        sc2_params["price_min"],
+        sc2_params["price_max"],
+        sc2_params["agk"],
+        slope_bid=sc2_params["slope_bid"],
+        slope_ask=sc2_params["slope_ask"],
+        spread=sc2_params["spread"],
+        benchmark_method=benchmark_method_code,
+        benchmark_top_pct=int(benchmark_top_pct),
+        cap_col="InstalledCapacity_MW",
+        price_method=sc2_params["price_method"],
+        trf=float(sc2_params["trf"]),
+        auction_supply_share=float(sc2_params["auction_supply_share"]),
     )
 
-    top_n = 30
-    df_view = df_plot.copy()
-    if len(df_view) > top_n:
-        df_view = df_view.reindex(
-            df_view["TL_per_MWh"].abs().sort_values(ascending=False).head(top_n).index
-        ).sort_values("TL_per_MWh")
+    # Add TL and ordering
+    ref_df = add_cost_columns(ref_out, fx_rate=ref_params["fx_rate"], clearing_price=float(ref_price))
+    sc2_df = add_cost_columns(sc2_out, fx_rate=sc2_params["fx_rate"], clearing_price=float(sc2_price))
 
-    fig = px.bar(
-        df_view,
-        x="TL_per_MWh",
+    # Basic headline
+    st.subheader("Scenario headline results")
+    h1, h2, h3 = st.columns(3)
+    with h1:
+        kpi_card("Reference carbon price", f"{ref_price:.2f} €/tCO₂", ref_params["price_method"])
+    with h2:
+        kpi_card("Scenario 2 carbon price", f"{sc2_price:.2f} €/tCO₂", sc2_params["price_method"])
+    with h3:
+        kpi_card("Δ Price (Sc2 - Ref)", f"{(sc2_price - ref_price):+.2f} €/tCO₂", "difference")
+
+    # Compare plant-level TL/MWh
+    st.subheader("Plant-level comparison (TL/MWh)")
+    # choose best available columns
+    ref_col = "ets_net_cashflow_TL/MWh" if "ets_net_cashflow_TL/MWh" in ref_df.columns else None
+    sc2_col = "ets_net_cashflow_TL/MWh" if "ets_net_cashflow_TL/MWh" in sc2_df.columns else None
+
+    comp = ref_df[["Plant", "InstalledCapacity_MW"]].copy()
+    comp = comp.merge(ref_df[["Plant"] + ([ref_col] if ref_col else [])], on="Plant", how="left")
+    comp = comp.merge(sc2_df[["Plant"] + ([sc2_col] if sc2_col else [])], on="Plant", how="left", suffixes=("_Ref", "_Sc2"))
+
+    # rename safely
+    if ref_col:
+        comp = comp.rename(columns={ref_col: "TL_per_MWh_Ref"})
+    else:
+        comp["TL_per_MWh_Ref"] = np.nan
+
+    if sc2_col:
+        comp = comp.rename(columns={sc2_col: "TL_per_MWh_Sc2"})
+    else:
+        comp["TL_per_MWh_Sc2"] = np.nan
+
+    comp["Δ_TL_per_MWh"] = comp["TL_per_MWh_Sc2"] - comp["TL_per_MWh_Ref"]
+
+    # sort by absolute delta
+    view = comp.copy()
+    view["absΔ"] = view["Δ_TL_per_MWh"].abs()
+    view = view.sort_values("absΔ", ascending=False).head(30).sort_values("Δ_TL_per_MWh")
+
+    fig_delta = px.bar(
+        view,
+        x="Δ_TL_per_MWh",
         y="Plant",
         orientation="h",
-        color="Impact_Type",
-        color_discrete_map={
-            "Cost increase": "#c0392b",
-            "Cost reduction": "#2980b9",
-        },
-        labels={
-            "TL_per_MWh": "Net ETS impact (TL/MWh)",
-            "Plant": "",
-            "Impact_Type": "",
-        },
-        title="Net ETS impact on electricity generation costs (TL/MWh)<br><sup>Most affected plants, sorted</sup>",
-    )
-
-    fig.update_layout(
         template="simple_white",
-        height=750,
-        bargap=0.18,
-        title_x=0.01,
-        font=dict(family="Arial, sans-serif", size=13),
-        legend_orientation="h",
-        legend_y=1.08,
-        legend_x=0.01,
-        xaxis=dict(
-            zeroline=True,
-            zerolinecolor="black",
-            gridcolor="rgba(0,0,0,0.06)",
-            title="Net ETS impact (TL/MWh)",
-        ),
-        yaxis=dict(tickfont=dict(size=11), title=""),
+        labels={"Δ_TL_per_MWh": "Δ Net ETS impact (TL/MWh) [Scenario2 - Reference]", "Plant": ""},
+        title="Top 30 plants by |Δ TL/MWh|"
     )
+    fig_delta.update_layout(height=750, margin=dict(l=10, r=10, t=60, b=10))
+    fig_delta.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=True, zerolinecolor="black")
+    fig_delta.update_yaxes(showgrid=False)
+    st.plotly_chart(fig_delta, use_container_width=True)
 
-    fig.update_traces(
-        hovertemplate="<b>%{y}</b><br>Net ETS impact: %{x:.1f} TL/MWh<extra></extra>"
-    )
+    # Show full tables side by side
+    st.subheader("Raw results (same columns) – Reference vs Scenario 2")
+    cL, cR = st.columns(2)
+    with cL:
+        st.markdown("### Reference – Results")
+        st.dataframe(ref_df, use_container_width=True, height=520)
+    with cR:
+        st.markdown("### Scenario 2 – Results")
+        st.dataframe(sc2_df, use_container_width=True, height=520)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("Comparison table (Δ)")
+    st.dataframe(comp.drop(columns=["absΔ"], errors="ignore"), use_container_width=True)
 
-    # ========================================================
-    # RAW TABLE (ADD: TL columns + capacity next to Plant)
-    # ========================================================
-    st.subheader("Tüm Sonuçlar (Ham Tablo)")
-
-    results_df = sonuc_df.copy()
-
-    # Ensure InstalledCapacity_MW exists in results (if missing, merge from input)
-    if "InstalledCapacity_MW" not in results_df.columns and "InstalledCapacity_MW" in df_all.columns:
-        cap_map = df_all.groupby("Plant", as_index=False)["InstalledCapacity_MW"].max()
-        results_df = results_df.merge(cap_map, on="Plant", how="left")
-
-    # Add TL columns
-    # 1) TL/MWh (preferred if € per MWh exists)
-    if "ets_net_cashflow_€/MWh" in results_df.columns:
-        results_df["ets_net_cashflow_TL/MWh"] = pd.to_numeric(results_df["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx_rate)
-
-    # 2) Total € and Total TL (if net_ets exists; cost/revenue)
-    if "net_ets" in results_df.columns:
-        results_df["ets_net_cashflow_€"] = pd.to_numeric(results_df["net_ets"], errors="coerce") * float(clearing_price)
-        results_df["ets_net_cashflow_TL"] = results_df["ets_net_cashflow_€"] * float(fx_rate)
-
-    # Optional: TL/MWh from total if €/MWh missing
-    if "ets_net_cashflow_TL/MWh" not in results_df.columns and "ets_net_cashflow_TL" in results_df.columns and "Generation_MWh" in results_df.columns:
-        gen = pd.to_numeric(results_df["Generation_MWh"], errors="coerce").replace(0, np.nan)
-        results_df["ets_net_cashflow_TL/MWh"] = results_df["ets_net_cashflow_TL"] / gen
-
-    # Reorder columns: Plant then InstalledCapacity_MW right after
-    cols = list(results_df.columns)
-    if "Plant" in cols and "InstalledCapacity_MW" in cols:
-        cols.remove("InstalledCapacity_MW")
-        plant_idx = cols.index("Plant")
-        cols.insert(plant_idx + 1, "InstalledCapacity_MW")
-        results_df = results_df[cols]
-
-    st.dataframe(results_df, use_container_width=True)
-
-    # ========================================================
-    # EXCEL DOWNLOAD (ADD)
-    # ========================================================
-    def _to_excel_bytes(df_results: pd.DataFrame, bm_map: dict, params: dict) -> bytes:
-        out = BytesIO()
-        with pd.ExcelWriter(out, engine="openpyxl") as writer:
-            df_results.to_excel(writer, index=False, sheet_name="Results")
-
-            # Benchmarks sheet
-            if isinstance(bm_map, dict) and len(bm_map) > 0:
-                bm_df = pd.DataFrame(
-                    [{"FuelType": k, "Benchmark": v} for k, v in bm_map.items()]
-                )
-                bm_df.to_excel(writer, index=False, sheet_name="Benchmarks")
-
-            # Params sheet (for traceability)
-            p_df = pd.DataFrame([params])
-            p_df.to_excel(writer, index=False, sheet_name="Params")
-
-        return out.getvalue()
-
-    params_dict = {
-        "price_min": price_min,
-        "price_max": price_max,
-        "agk": agk,
+    # Excel download
+    params_ref = {
+        **ref_params,
         "benchmark_method": benchmark_method_code,
         "benchmark_top_pct": int(benchmark_top_pct),
-        "price_method": price_method,
-        "slope_bid": slope_bid,
-        "slope_ask": slope_ask,
-        "spread": spread,
-        "fx_rate": float(fx_rate),
-        "trf": float(trf),
-        "auction_supply_share": float(auction_supply_share),
+        "scope_dg": scope_dg,
+        "scope_import": scope_import,
+        "scope_lignite": scope_lignite,
+    }
+    params_sc2 = {
+        **sc2_params,
+        "benchmark_method": benchmark_method_code,
+        "benchmark_top_pct": int(benchmark_top_pct),
+        "scope_dg": scope_dg,
+        "scope_import": scope_import,
+        "scope_lignite": scope_lignite,
     }
 
-    excel_bytes = _to_excel_bytes(results_df, benchmark_map, params_dict)
+    excel_bytes = to_excel_bytes(
+        ref_df=ref_df,
+        sc2_df=sc2_df,
+        comp_df=comp.drop(columns=["absΔ"], errors="ignore"),
+        bm_map_ref=ref_bm_map,
+        bm_map_sc2=sc2_bm_map,
+        params_ref=params_ref,
+        params_sc2=params_sc2,
+    )
 
     st.download_button(
-        "Download results as Excel (.xlsx)",
+        "Download Scenario Results as Excel (.xlsx)",
         data=excel_bytes,
-        file_name="ets_results.xlsx",
+        file_name="ets_scenario_comparison.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
