@@ -395,7 +395,7 @@ if st.button("Run ETS Model"):
         return float(np.sum(q0 * np.clip(frac, 0.0, 1.0)))
 
 
-    # ---------- NEW) Price formation chart ----------
+    # ---------- Price formation chart ----------
     with st.expander("Price formation (how the carbon price is formed)", expanded=True):
         buyers = sonuc_df.loc[sonuc_df["net_ets"] > 0, ["net_ets", "p_bid"]].copy()
         sellers = sonuc_df.loc[sonuc_df["net_ets"] < 0, ["net_ets", "p_ask"]].copy()
@@ -403,7 +403,6 @@ if st.button("Run ETS Model"):
         fig_pf = go.Figure()
 
         if price_method == "Market Clearing":
-            # Demand stack (highest→lowest bids)
             if not buyers.empty:
                 b = buyers.sort_values("p_bid", ascending=False).copy()
                 b["cum_q"] = b["net_ets"].cumsum()
@@ -412,7 +411,6 @@ if st.button("Run ETS Model"):
                     mode="lines", name="Demand curve (bids)"
                 ))
 
-            # Supply stack (lowest→highest asks)
             if not sellers.empty:
                 s = sellers.sort_values("p_ask", ascending=True).copy()
                 s["supply_q"] = (-s["net_ets"]).astype(float)
@@ -518,7 +516,6 @@ if st.button("Run ETS Model"):
         if buyers.empty:
             st.info("No buyers (net_ets > 0) in the current scope — bid curve not available.")
         else:
-            # ✅ DÜZELTME: talep eğrisi highest→lowest (descending) olmalı
             buyers = buyers.sort_values("p_bid", ascending=False)
             buyers["cum_q"] = buyers["net_ets"].cumsum()
 
@@ -681,17 +678,83 @@ if st.button("Run ETS Model"):
     st.plotly_chart(fig, use_container_width=True)
 
     # ========================================================
-    # RAW TABLE
+    # RAW TABLE (ADD: TL columns + capacity next to Plant)
     # ========================================================
     st.subheader("Tüm Sonuçlar (Ham Tablo)")
-    st.dataframe(sonuc_df, use_container_width=True)
+
+    results_df = sonuc_df.copy()
+
+    # Ensure InstalledCapacity_MW exists in results (if missing, merge from input)
+    if "InstalledCapacity_MW" not in results_df.columns and "InstalledCapacity_MW" in df_all.columns:
+        cap_map = df_all.groupby("Plant", as_index=False)["InstalledCapacity_MW"].max()
+        results_df = results_df.merge(cap_map, on="Plant", how="left")
+
+    # Add TL columns
+    # 1) TL/MWh (preferred if € per MWh exists)
+    if "ets_net_cashflow_€/MWh" in results_df.columns:
+        results_df["ets_net_cashflow_TL/MWh"] = pd.to_numeric(results_df["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx_rate)
+
+    # 2) Total € and Total TL (if net_ets exists; cost/revenue)
+    if "net_ets" in results_df.columns:
+        results_df["ets_net_cashflow_€"] = pd.to_numeric(results_df["net_ets"], errors="coerce") * float(clearing_price)
+        results_df["ets_net_cashflow_TL"] = results_df["ets_net_cashflow_€"] * float(fx_rate)
+
+    # Optional: TL/MWh from total if €/MWh missing
+    if "ets_net_cashflow_TL/MWh" not in results_df.columns and "ets_net_cashflow_TL" in results_df.columns and "Generation_MWh" in results_df.columns:
+        gen = pd.to_numeric(results_df["Generation_MWh"], errors="coerce").replace(0, np.nan)
+        results_df["ets_net_cashflow_TL/MWh"] = results_df["ets_net_cashflow_TL"] / gen
+
+    # Reorder columns: Plant then InstalledCapacity_MW right after
+    cols = list(results_df.columns)
+    if "Plant" in cols and "InstalledCapacity_MW" in cols:
+        cols.remove("InstalledCapacity_MW")
+        plant_idx = cols.index("Plant")
+        cols.insert(plant_idx + 1, "InstalledCapacity_MW")
+        results_df = results_df[cols]
+
+    st.dataframe(results_df, use_container_width=True)
 
     # ========================================================
-    # CSV DOWNLOAD
+    # EXCEL DOWNLOAD (ADD)
     # ========================================================
+    def _to_excel_bytes(df_results: pd.DataFrame, bm_map: dict, params: dict) -> bytes:
+        out = BytesIO()
+        with pd.ExcelWriter(out, engine="openpyxl") as writer:
+            df_results.to_excel(writer, index=False, sheet_name="Results")
+
+            # Benchmarks sheet
+            if isinstance(bm_map, dict) and len(bm_map) > 0:
+                bm_df = pd.DataFrame(
+                    [{"FuelType": k, "Benchmark": v} for k, v in bm_map.items()]
+                )
+                bm_df.to_excel(writer, index=False, sheet_name="Benchmarks")
+
+            # Params sheet (for traceability)
+            p_df = pd.DataFrame([params])
+            p_df.to_excel(writer, index=False, sheet_name="Params")
+
+        return out.getvalue()
+
+    params_dict = {
+        "price_min": price_min,
+        "price_max": price_max,
+        "agk": agk,
+        "benchmark_method": benchmark_method_code,
+        "benchmark_top_pct": int(benchmark_top_pct),
+        "price_method": price_method,
+        "slope_bid": slope_bid,
+        "slope_ask": slope_ask,
+        "spread": spread,
+        "fx_rate": float(fx_rate),
+        "trf": float(trf),
+        "auction_supply_share": float(auction_supply_share),
+    }
+
+    excel_bytes = _to_excel_bytes(results_df, benchmark_map, params_dict)
+
     st.download_button(
-        "Download results as CSV",
-        data=sonuc_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="ets_results.csv",
-        mime="text/csv"
+        "Download results as Excel (.xlsx)",
+        data=excel_bytes,
+        file_name="ets_results.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
