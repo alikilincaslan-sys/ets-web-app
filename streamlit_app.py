@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 
 from io import BytesIO
 
@@ -161,6 +162,22 @@ def to_excel_bytes(
 
     out.seek(0)
     return out.read()
+
+
+def safe_intensity(df: pd.DataFrame) -> pd.Series:
+    """
+    Returns plant-level intensity series from df:
+      - uses 'intensity' if exists
+      - else computes Emissions_tCO2 / Generation_MWh
+    """
+    if "intensity" in df.columns:
+        s = pd.to_numeric(df["intensity"], errors="coerce")
+        return s
+    if ("Emissions_tCO2" in df.columns) and ("Generation_MWh" in df.columns):
+        e = pd.to_numeric(df["Emissions_tCO2"], errors="coerce")
+        g = pd.to_numeric(df["Generation_MWh"], errors="coerce").replace(0, np.nan)
+        return e / g
+    return pd.Series([np.nan] * len(df), index=df.index)
 
 
 # ============================================================
@@ -580,6 +597,117 @@ if st.session_state.get("has_results", False):
     fig_grouped.update_yaxes(showgrid=False)
 
     st.plotly_chart(fig_grouped, use_container_width=True)
+
+    # ============================================================
+    # NEW: EI (tCO2/MWh) SORTED LINE CHART (2 scenarios) + Benchmarks
+    # ============================================================
+    st.subheader("Emission intensity (EI) ranking (tCO₂/MWh) – Reference vs Scenario 2")
+
+    # build a plant-level EI table
+    ref_ei = ref_df[["Plant"]].copy()
+    ref_ei["EI_Ref"] = safe_intensity(ref_df)
+    if "FuelType" in ref_df.columns:
+        ref_ei["FuelType"] = ref_df["FuelType"]
+    elif "FuelType" in sc2_df.columns:
+        ref_ei = ref_ei.merge(sc2_df[["Plant", "FuelType"]], on="Plant", how="left")
+
+    sc2_ei = sc2_df[["Plant"]].copy()
+    sc2_ei["EI_Sc2"] = safe_intensity(sc2_df)
+
+    ei = ref_ei.merge(sc2_ei, on="Plant", how="outer")
+    if "FuelType" not in ei.columns and "FuelType" in sc2_df.columns:
+        ei = ei.merge(sc2_df[["Plant", "FuelType"]], on="Plant", how="left")
+
+    ei["FuelGroup"] = ei["FuelType"].apply(_fuel_label) if "FuelType" in ei.columns else "Other"
+
+    # apply SAME fuel filter
+    ei_plot = ei.copy()
+    if fuel_choice != "All":
+        ei_plot = ei_plot[ei_plot["FuelGroup"] == fuel_choice].copy()
+
+    # sort by EI_Ref (fallback EI_Sc2 if ref missing)
+    sort_key = ei_plot["EI_Ref"].copy()
+    sort_key = sort_key.fillna(ei_plot["EI_Sc2"])
+    ei_plot = ei_plot.assign(_sort=sort_key).dropna(subset=["_sort"]).sort_values("_sort").reset_index(drop=True)
+
+    # keep it readable if too many plants
+    max_plants = 60
+    if len(ei_plot) > max_plants:
+        ei_plot = ei_plot.tail(max_plants).reset_index(drop=True)
+
+    # x index for ranking
+    ei_plot["Rank"] = np.arange(1, len(ei_plot) + 1)
+
+    fig_ei = go.Figure()
+
+    fig_ei.add_trace(go.Scatter(
+        x=ei_plot["Rank"],
+        y=ei_plot["EI_Ref"],
+        mode="lines+markers",
+        name="Reference",
+        line=dict(color="#1f77b4"),
+    ))
+    fig_ei.add_trace(go.Scatter(
+        x=ei_plot["Rank"],
+        y=ei_plot["EI_Sc2"],
+        mode="lines+markers",
+        name="Scenario 2",
+        line=dict(color="#d62728"),
+    ))
+
+    # benchmark lines (fuel-specific) – colors requested
+    # (use Reference benchmark map by default; if missing use Scenario2; if both missing skip)
+    bm_map = ref_bm_map if isinstance(ref_bm_map, dict) else {}
+    if not bm_map:
+        bm_map = sc2_bm_map if isinstance(sc2_bm_map, dict) else {}
+
+    def _bm_color(fuel_name: str) -> str:
+        s = str(fuel_name).lower()
+        if "lignite" in s or "linyit" in s:
+            return "green"
+        if "gas" in s or "dg" in s or "doğalgaz" in s or "dogalgaz" in s:
+            return "blue"
+        if "import" in s or "ithal" in s:
+            return "gold"
+        return "gray"
+
+    # draw one line per benchmark key (if numeric)
+    for fuel_name, bval in (bm_map or {}).items():
+        try:
+            yb = float(bval)
+        except Exception:
+            continue
+        if not np.isfinite(yb):
+            continue
+
+        fig_ei.add_hline(
+            y=yb,
+            line_dash="dash",
+            line_width=2,
+            line_color=_bm_color(fuel_name),
+            annotation_text=f"{fuel_name} benchmark",
+            annotation_position="top left",
+            opacity=0.85,
+        )
+
+    fig_ei.update_layout(
+        template="simple_white",
+        height=520,
+        margin=dict(l=10, r=10, t=60, b=10),
+        legend_orientation="h",
+        legend_y=1.08,
+        legend_x=0.01,
+        title="Plant emission intensity ranking (low → high)",
+    )
+    fig_ei.update_xaxes(title="Plant rank (sorted by EI)", showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+    fig_ei.update_yaxes(title="Emission intensity (tCO₂/MWh)", showgrid=True, gridcolor="rgba(0,0,0,0.06)")
+
+    st.plotly_chart(fig_ei, use_container_width=True)
+
+    st.caption(
+        "How to read: Plants are sorted from low to high emission intensity (EI). "
+        "Blue = Reference EI, Red = Scenario 2 EI. Dashed lines show fuel-specific benchmarks (colors: lignite=green, gas=blue, imported coal=yellow)."
+    )
 
     st.divider()
 
