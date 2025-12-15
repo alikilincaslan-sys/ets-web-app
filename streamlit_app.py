@@ -6,7 +6,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 
 from io import BytesIO
 
@@ -114,7 +113,6 @@ def add_cost_columns(df: pd.DataFrame, fx_rate: float) -> pd.DataFrame:
     if "ets_net_cashflow_€/MWh" in out.columns:
         out["ets_net_cashflow_TL/MWh"] = pd.to_numeric(out["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx_rate)
     else:
-        # fallback: if only total € exists
         if "ets_net_cashflow_€" in out.columns and "Generation_MWh" in out.columns:
             gen = pd.to_numeric(out["Generation_MWh"], errors="coerce").replace(0, np.nan)
             out["ets_net_cashflow_TL/MWh"] = (pd.to_numeric(out["ets_net_cashflow_€"], errors="coerce") * float(fx_rate)) / gen
@@ -126,7 +124,6 @@ def add_cost_columns(df: pd.DataFrame, fx_rate: float) -> pd.DataFrame:
     else:
         out["ets_cost_TL_total"] = np.nan
 
-    # put InstalledCapacity_MW right after Plant if possible
     cols = list(out.columns)
     if "Plant" in cols and "InstalledCapacity_MW" in cols:
         cols.remove("InstalledCapacity_MW")
@@ -167,10 +164,12 @@ def to_excel_bytes(
 
 
 # ============================================================
-# SESSION STATE INIT (✅ fuel filter değişince yeniden run etmesin)
+# SESSION STATE INIT
 # ============================================================
 if "has_results" not in st.session_state:
     st.session_state["has_results"] = False
+if "df_all_cached" not in st.session_state:
+    st.session_state["df_all_cached"] = None
 
 
 # ============================================================
@@ -188,8 +187,8 @@ benchmark_method_ui = st.sidebar.selectbox(
     ],
     index=0,
     key="benchmark_method_common",
-    help="Benchmark (B_fuel) yakıt bazında hesaplanır. Seçilen yöntem, B_fuel'in nasıl belirleneceğini tanımlar.",
 )
+
 st.sidebar.caption("Not: Kurulu güç ağırlıklı yöntemde Excel'de InstalledCapacity_MW kolonu gerekir.")
 
 BENCHMARK_METHOD_MAP = {
@@ -206,7 +205,6 @@ if benchmark_method_ui == "En iyi tesis dilimi (üretim payı)":
         options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         value=int(st.session_state.get("benchmark_top_pct_common", DEFAULTS["benchmark_top_pct"])),
         key="benchmark_top_pct_common",
-        help="Yakıt grubu içinde intensity düşük olanlardan başlayarak toplam üretimin belirtilen yüzdesine kadar olan dilim seçilir; benchmark bu dilimin üretim-ağırlıklı ortalamasıdır.",
     )
 else:
     st.session_state["benchmark_top_pct_common"] = 100
@@ -374,35 +372,32 @@ def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
 
 
 # ============================================================
-# FILE UPLOAD
+# FILE UPLOAD  (✅ önemli: uploader boş dönse bile cached sonuçları göstereceğiz)
 # ============================================================
 
-uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
-if uploaded is None:
-    st.info("Lütfen Excel dosyası yükleyin.")
-    st.stop()
+uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"], key="uploaded_excel")
 
-df_all_raw = read_all_sheets(uploaded)
-df_all = clean_ets_input(df_all_raw)
+if uploaded is not None:
+    df_all_raw = read_all_sheets(uploaded)
+    df_all = clean_ets_input(df_all_raw)
 
-# Apply common scope filtering
-df_scoped = df_all.copy()
-dropped = {"DG": [], "IMPORT_COAL": [], "LIGNITE": []}
+    df_scoped = df_all.copy()
+    df_scoped, _ = _apply_scope(df_scoped, "DG", st.session_state.get("scope_dg", "Include all plants"))
+    df_scoped, _ = _apply_scope(df_scoped, "IMPORT_COAL", st.session_state.get("scope_import", "Include all plants"))
+    df_scoped, _ = _apply_scope(df_scoped, "LIGNITE", st.session_state.get("scope_lignite", "Include all plants"))
+    df_all = df_scoped
 
-df_scoped, dropped["DG"] = _apply_scope(df_scoped, "DG", st.session_state.get("scope_dg", "Include all plants"))
-df_scoped, dropped["IMPORT_COAL"] = _apply_scope(df_scoped, "IMPORT_COAL", st.session_state.get("scope_import", "Include all plants"))
-df_scoped, dropped["LIGNITE"] = _apply_scope(df_scoped, "LIGNITE", st.session_state.get("scope_lignite", "Include all plants"))
+    # ✅ cache input
+    st.session_state["df_all_cached"] = df_all
 
-df_all = df_scoped
-
-if any(len(v) > 0 for v in dropped.values()):
-    st.sidebar.caption("Dropped plants (by scope):")
-    if dropped["DG"]:
-        st.sidebar.write("DG:", ", ".join(dropped["DG"]))
-    if dropped["IMPORT_COAL"]:
-        st.sidebar.write("Imported coal:", ", ".join(dropped["IMPORT_COAL"]))
-    if dropped["LIGNITE"]:
-        st.sidebar.write("Lignite:", ", ".join(dropped["LIGNITE"]))
+else:
+    # Eğer daha önce run ile sonuç aldıysak: uploader boş dönse bile devam et
+    if st.session_state.get("has_results", False) and st.session_state.get("df_all_cached") is not None:
+        df_all = st.session_state["df_all_cached"]
+        st.caption("ℹ️ Note: Excel uploader temporarily cleared on rerun; using cached input for display.")
+    else:
+        st.info("Lütfen Excel dosyası yükleyin.")
+        st.stop()
 
 
 # ============================================================
@@ -446,11 +441,9 @@ if run:
         auction_supply_share=float(sc2_params["auction_supply_share"]),
     )
 
-    # Add TL columns + reorder
     ref_df = add_cost_columns(ref_out, fx_rate=ref_params["fx_rate"])
     sc2_df = add_cost_columns(sc2_out, fx_rate=sc2_params["fx_rate"])
 
-    # ✅ SONUÇLARI CACHE'LE (fuel filter değişince yeniden hesap yapmayacak)
     st.session_state["ref_df"] = ref_df
     st.session_state["sc2_df"] = sc2_df
     st.session_state["ref_bm_map"] = ref_bm_map or {}
@@ -483,7 +476,6 @@ if run:
 # ============================================================
 
 if st.session_state.get("has_results", False):
-    # Cache'ten al
     ref_df = st.session_state["ref_df"]
     sc2_df = st.session_state["sc2_df"]
     ref_bm_map = st.session_state.get("ref_bm_map", {})
@@ -493,9 +485,6 @@ if st.session_state.get("has_results", False):
     params_ref_saved = st.session_state.get("params_ref_saved", {})
     params_sc2_saved = st.session_state.get("params_sc2_saved", {})
 
-    # -------------------------
-    # HEADLINE
-    # -------------------------
     st.subheader("Scenario headline results")
     h1, h2, h3 = st.columns(3)
     with h1:
@@ -510,19 +499,6 @@ if st.session_state.get("has_results", False):
     # ============================================================
     st.subheader("Plant-level comparison (TL/MWh)")
 
-    def _ensure_tl_per_mwh(df: pd.DataFrame, fx: float) -> pd.DataFrame:
-        df = df.copy()
-        if "ets_net_cashflow_€/MWh" in df.columns and "ets_net_cashflow_TL/MWh" not in df.columns:
-            df["ets_net_cashflow_TL/MWh"] = pd.to_numeric(df["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx)
-        if "ets_net_cashflow_TL/MWh" not in df.columns:
-            if "ets_net_cashflow_€" in df.columns and "Generation_MWh" in df.columns:
-                gen = pd.to_numeric(df["Generation_MWh"], errors="coerce").replace(0, np.nan)
-                df["ets_net_cashflow_TL/MWh"] = (pd.to_numeric(df["ets_net_cashflow_€"], errors="coerce") * float(fx)) / gen
-            else:
-                df["ets_net_cashflow_TL/MWh"] = np.nan
-        return df
-
-    # Bu kısım: Fuel dropdown için etiketleme (görsel)
     def _fuel_label(ft: str) -> str:
         s = str(ft).strip().lower()
         if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
@@ -533,31 +509,26 @@ if st.session_state.get("has_results", False):
             return "Lignite"
         return "Other"
 
-    ref_df2 = _ensure_tl_per_mwh(ref_df, params_ref_saved.get("fx_rate", DEFAULTS["fx_rate"]))
-    sc2_df2 = _ensure_tl_per_mwh(sc2_df, params_sc2_saved.get("fx_rate", DEFAULTS["fx_rate"]))
-
-    # Comparison base (FuelType'ı da taşı)
     base_cols = ["Plant"]
-    if "FuelType" in ref_df2.columns:
+    if "FuelType" in ref_df.columns:
         base_cols.append("FuelType")
 
-    comp = ref_df2[base_cols].copy()
-    comp["InstalledCapacity_MW"] = ref_df2["InstalledCapacity_MW"] if "InstalledCapacity_MW" in ref_df2.columns else np.nan
-    comp["TL_per_MWh_Ref"] = pd.to_numeric(ref_df2.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
+    comp = ref_df[base_cols].copy()
+    comp["InstalledCapacity_MW"] = ref_df["InstalledCapacity_MW"] if "InstalledCapacity_MW" in ref_df.columns else np.nan
+    comp["TL_per_MWh_Ref"] = pd.to_numeric(ref_df.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
 
-    sc2_small = sc2_df2[["Plant"]].copy()
-    sc2_small["TL_per_MWh_Sc2"] = pd.to_numeric(sc2_df2.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
+    sc2_small = sc2_df[["Plant"]].copy()
+    sc2_small["TL_per_MWh_Sc2"] = pd.to_numeric(sc2_df.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
 
     comp = comp.merge(sc2_small, on="Plant", how="outer")
 
-    # FuelType ref'te yoksa (nadiren), sc2'den tamamla
-    if "FuelType" not in comp.columns and "FuelType" in sc2_df2.columns:
-        comp = comp.merge(sc2_df2[["Plant", "FuelType"]], on="Plant", how="left")
+    if "FuelType" not in comp.columns and "FuelType" in sc2_df.columns:
+        comp = comp.merge(sc2_df[["Plant", "FuelType"]], on="Plant", how="left")
 
     comp["FuelGroup"] = comp["FuelType"].apply(_fuel_label) if "FuelType" in comp.columns else "Other"
     comp["Δ_TL_per_MWh"] = comp["TL_per_MWh_Sc2"] - comp["TL_per_MWh_Ref"]
 
-    # -------- Fuel filter (grafiğin üstünde) --------
+    # ✅ Fuel filter (bu değişince sadece yeniden çizilir; model tekrar çalışmaz)
     fuel_options = ["All", "Natural Gas", "Imported Coal", "Lignite", "Other"]
     fuel_choice = st.selectbox("Fuel filter", fuel_options, index=0, key="fuel_filter_choice")
 
@@ -565,11 +536,9 @@ if st.session_state.get("has_results", False):
     if fuel_choice != "All":
         plot_df = plot_df[plot_df["FuelGroup"] == fuel_choice].copy()
 
-    # En çok etkilenenleri seç (okunabilirlik için)
     plot_df["absΔ"] = plot_df["Δ_TL_per_MWh"].abs()
     plot_df = plot_df.sort_values("absΔ", ascending=False).head(25)
 
-    # Long format: iki senaryo yan yana bar
     long_df = plot_df.melt(
         id_vars=["Plant", "FuelGroup"],
         value_vars=["TL_per_MWh_Ref", "TL_per_MWh_Sc2"],
@@ -581,7 +550,6 @@ if st.session_state.get("has_results", False):
         "TL_per_MWh_Sc2": "Scenario 2",
     })
 
-    # Bitkileri delta büyüklüğüne göre sırala (görsel)
     plant_order = plot_df.sort_values("Δ_TL_per_MWh")["Plant"].tolist()
     long_df["Plant"] = pd.Categorical(long_df["Plant"], categories=plant_order, ordered=True)
 
@@ -615,9 +583,6 @@ if st.session_state.get("has_results", False):
 
     st.divider()
 
-    # ============================
-    # SHOW RAW TABLES
-    # ============================
     with st.expander("Reference results (raw table)", expanded=False):
         st.dataframe(ref_df, use_container_width=True)
 
@@ -627,9 +592,6 @@ if st.session_state.get("has_results", False):
     with st.expander("Comparison table (TL/MWh)", expanded=False):
         st.dataframe(comp.drop(columns=["absΔ"], errors="ignore"), use_container_width=True)
 
-    # ============================
-    # DOWNLOAD EXCEL
-    # ============================
     excel_bytes = to_excel_bytes(
         ref_df=ref_df,
         sc2_df=sc2_df,
