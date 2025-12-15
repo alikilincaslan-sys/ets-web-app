@@ -456,7 +456,7 @@ if run:
         kpi_card("Δ Price (Sc2 - Ref)", f"{(sc2_price - ref_price):+.2f} €/tCO₂", "difference")
 
     # ============================================================
-    # PLANT-LEVEL COMPARISON (FIXED: NO KEYERROR)
+    # PLANT-LEVEL COMPARISON (SIDE-BY-SIDE + FUEL FILTER)
     # ============================================================
     st.subheader("Plant-level comparison (TL/MWh)")
 
@@ -468,12 +468,30 @@ if run:
             if "ets_net_cashflow_€" in df.columns and "Generation_MWh" in df.columns:
                 gen = pd.to_numeric(df["Generation_MWh"], errors="coerce").replace(0, np.nan)
                 df["ets_net_cashflow_TL/MWh"] = (pd.to_numeric(df["ets_net_cashflow_€"], errors="coerce") * float(fx)) / gen
+            else:
+                df["ets_net_cashflow_TL/MWh"] = np.nan
         return df
+
+    # Bu kısım: Fuel dropdown için etiketleme (görsel)
+    def _fuel_label(ft: str) -> str:
+        s = str(ft).strip().lower()
+        if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
+            return "Natural Gas"
+        if any(k in s for k in ["ithal", "import", "imported"]):
+            return "Imported Coal"
+        if any(k in s for k in ["linyit", "lignite"]):
+            return "Lignite"
+        return "Other"
 
     ref_df2 = _ensure_tl_per_mwh(ref_df, ref_params["fx_rate"])
     sc2_df2 = _ensure_tl_per_mwh(sc2_df, sc2_params["fx_rate"])
 
-    comp = ref_df2[["Plant"]].copy()
+    # Comparison base (FuelType'ı da taşı)
+    base_cols = ["Plant"]
+    if "FuelType" in ref_df2.columns:
+        base_cols.append("FuelType")
+
+    comp = ref_df2[base_cols].copy()
     comp["InstalledCapacity_MW"] = ref_df2["InstalledCapacity_MW"] if "InstalledCapacity_MW" in ref_df2.columns else np.nan
     comp["TL_per_MWh_Ref"] = pd.to_numeric(ref_df2.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
 
@@ -481,25 +499,69 @@ if run:
     sc2_small["TL_per_MWh_Sc2"] = pd.to_numeric(sc2_df2.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
 
     comp = comp.merge(sc2_small, on="Plant", how="outer")
+
+    # FuelType ref'te yoksa (nadiren), sc2'den tamamla
+    if "FuelType" not in comp.columns and "FuelType" in sc2_df2.columns:
+        comp = comp.merge(sc2_df2[["Plant", "FuelType"]], on="Plant", how="left")
+
+    comp["FuelGroup"] = comp["FuelType"].apply(_fuel_label) if "FuelType" in comp.columns else "Other"
     comp["Δ_TL_per_MWh"] = comp["TL_per_MWh_Sc2"] - comp["TL_per_MWh_Ref"]
 
-    view = comp.copy()
-    view["absΔ"] = view["Δ_TL_per_MWh"].abs()
-    view = view.sort_values("absΔ", ascending=False).head(30).sort_values("Δ_TL_per_MWh")
+    # -------- Fuel filter (grafiğin üstünde) --------
+    fuel_options = ["All", "Natural Gas", "Imported Coal", "Lignite", "Other"]
+    fuel_choice = st.selectbox("Fuel filter", fuel_options, index=0)
 
-    fig_delta = px.bar(
-        view,
-        x="Δ_TL_per_MWh",
+    plot_df = comp.copy()
+    if fuel_choice != "All":
+        plot_df = plot_df[plot_df["FuelGroup"] == fuel_choice].copy()
+
+    # En çok etkilenenleri seç (okunabilirlik için)
+    plot_df["absΔ"] = plot_df["Δ_TL_per_MWh"].abs()
+    plot_df = plot_df.sort_values("absΔ", ascending=False).head(25)
+
+    # Long format: iki senaryo yan yana bar
+    long_df = plot_df.melt(
+        id_vars=["Plant", "FuelGroup"],
+        value_vars=["TL_per_MWh_Ref", "TL_per_MWh_Sc2"],
+        var_name="Scenario",
+        value_name="TL_per_MWh",
+    )
+    long_df["Scenario"] = long_df["Scenario"].replace({
+        "TL_per_MWh_Ref": "Reference",
+        "TL_per_MWh_Sc2": "Scenario 2",
+    })
+
+    # Bitkileri delta büyüklüğüne göre sırala (görsel)
+    plant_order = plot_df.sort_values("Δ_TL_per_MWh")["Plant"].tolist()
+    long_df["Plant"] = pd.Categorical(long_df["Plant"], categories=plant_order, ordered=True)
+
+    fig_grouped = px.bar(
+        long_df,
+        x="TL_per_MWh",
         y="Plant",
+        color="Scenario",
+        barmode="group",
         orientation="h",
         template="simple_white",
-        labels={"Δ_TL_per_MWh": "Δ Net ETS impact (TL/MWh) [Scenario2 - Reference]", "Plant": ""},
-        title="Top 30 plants by |Δ TL/MWh|",
+        labels={"TL_per_MWh": "Net ETS impact (TL/MWh)", "Plant": ""},
+        title="Plant-level ETS impact by scenario (side-by-side)",
+        color_discrete_map={
+            "Reference": "#1f77b4",   # mavi
+            "Scenario 2": "#d62728",  # kırmızı
+        }
     )
-    fig_delta.update_layout(height=750, margin=dict(l=10, r=10, t=60, b=10))
-    fig_delta.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=True, zerolinecolor="black")
-    fig_delta.update_yaxes(showgrid=False)
-    st.plotly_chart(fig_delta, use_container_width=True)
+
+    fig_grouped.update_layout(
+        height=780,
+        margin=dict(l=10, r=10, t=60, b=10),
+        legend_orientation="h",
+        legend_y=1.08,
+        legend_x=0.01,
+    )
+    fig_grouped.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=True, zerolinecolor="black")
+    fig_grouped.update_yaxes(showgrid=False)
+
+    st.plotly_chart(fig_grouped, use_container_width=True)
 
     st.divider()
 
