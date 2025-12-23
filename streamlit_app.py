@@ -1,12 +1,11 @@
 # ============================================================
-# ETS GELİŞTİRME MODÜLÜ – SCENARIO COMPARISON (Reference vs Scenario 2)
+# ETS GELİŞTİRME MODÜLÜ V002 – Scenario Runner + IEA Visuals
 # ============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 
 from io import BytesIO
 
@@ -17,7 +16,6 @@ from data_cleaning import clean_ets_input
 # ============================================================
 # DEFAULTS
 # ============================================================
-
 DEFAULTS = {
     "price_range": (1, 15),
     "agk": 0.50,
@@ -26,18 +24,17 @@ DEFAULTS = {
     "slope_bid": 150,
     "slope_ask": 150,
     "spread": 1.0,
-    "fx_rate": 50.0,
+    "fx_rate": 50.0,  # EURO KURU
     "trf": 0.0,
 }
 
-st.set_page_config(page_title="ETS Geliştirme Modülü v002 – Scenario Compare", layout="wide")
-st.title("ETS Geliştirme Modülü v002 – Scenario Comparison (Reference vs Scenario 2)")
+st.set_page_config(page_title="ETS Geliştirme Modülü V002", layout="wide")
+st.title("ETS Geliştirme Modülü v002")
 
 
 # ============================================================
 # INFOGRAPHIC CSS
 # ============================================================
-
 st.markdown(
     """
 <style>
@@ -52,23 +49,9 @@ st.markdown(
     flex-direction: column;
     justify-content: center;
   }
-  .kpi .label {
-    font-size: 0.80rem;
-    color: rgba(0,0,0,0.65);
-    margin-bottom: 4px;
-  }
-  .kpi .value {
-    font-size: 1.30rem;
-    font-weight: 750;
-    color: rgba(0,0,0,0.90);
-    line-height: 1.15;
-    word-break: break-word;
-  }
-  .kpi .sub {
-    font-size: 0.75rem;
-    color: rgba(0,0,0,0.60);
-    margin-top: 4px;
-  }
+  .kpi .label { font-size: 0.80rem; color: rgba(0,0,0,0.65); margin-bottom: 4px; }
+  .kpi .value { font-size: 1.30rem; font-weight: 750; color: rgba(0,0,0,0.90); line-height: 1.15; word-break: break-word; }
+  .kpi .sub { font-size: 0.75rem; color: rgba(0,0,0,0.60); margin-top: 4px; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -91,8 +74,7 @@ def kpi_card(label, value, sub=""):
 # ============================================================
 # HELPERS
 # ============================================================
-
-def read_all_sheets(file):
+def read_all_sheets(file) -> pd.DataFrame:
     xls = pd.ExcelFile(file)
     frames = []
     for sh in xls.sheet_names:
@@ -100,243 +82,6 @@ def read_all_sheets(file):
         df["FuelType"] = sh
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
-
-
-def add_cost_columns(df: pd.DataFrame, fx_rate: float) -> pd.DataFrame:
-    """
-    Adds:
-      - ets_net_cashflow_TL/MWh
-      - ets_cost_TL_total (approx: TL/MWh * MWh)
-    Also reorders columns to keep InstalledCapacity_MW right after Plant when possible.
-    """
-    out = df.copy()
-
-    if "ets_net_cashflow_€/MWh" in out.columns:
-        out["ets_net_cashflow_TL/MWh"] = pd.to_numeric(out["ets_net_cashflow_€/MWh"], errors="coerce") * float(fx_rate)
-    else:
-        if "ets_net_cashflow_€" in out.columns and "Generation_MWh" in out.columns:
-            gen = pd.to_numeric(out["Generation_MWh"], errors="coerce").replace(0, np.nan)
-            out["ets_net_cashflow_TL/MWh"] = (pd.to_numeric(out["ets_net_cashflow_€"], errors="coerce") * float(fx_rate)) / gen
-        else:
-            out["ets_net_cashflow_TL/MWh"] = np.nan
-
-    if "Generation_MWh" in out.columns:
-        out["ets_cost_TL_total"] = pd.to_numeric(out["ets_net_cashflow_TL/MWh"], errors="coerce") * pd.to_numeric(out["Generation_MWh"], errors="coerce")
-    else:
-        out["ets_cost_TL_total"] = np.nan
-
-    cols = list(out.columns)
-    if "Plant" in cols and "InstalledCapacity_MW" in cols:
-        cols.remove("InstalledCapacity_MW")
-        plant_idx = cols.index("Plant")
-        cols.insert(plant_idx + 1, "InstalledCapacity_MW")
-        out = out[cols]
-
-    return out
-
-
-def to_excel_bytes(
-    ref_df: pd.DataFrame,
-    sc2_df: pd.DataFrame,
-    comp_df: pd.DataFrame,
-    bm_map_ref: dict,
-    bm_map_sc2: dict,
-    params_ref: dict,
-    params_sc2: dict,
-) -> bytes:
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        ref_df.to_excel(writer, index=False, sheet_name="Results_Reference")
-        sc2_df.to_excel(writer, index=False, sheet_name="Results_Scenario2")
-        comp_df.to_excel(writer, index=False, sheet_name="Comparison_TLperMWh")
-
-        pd.DataFrame({"FuelType": list(bm_map_ref.keys()), "Benchmark_Ref": list(bm_map_ref.values())}).to_excel(
-            writer, index=False, sheet_name="Benchmark_Ref"
-        )
-        pd.DataFrame({"FuelType": list(bm_map_sc2.keys()), "Benchmark_Sc2": list(bm_map_sc2.values())}).to_excel(
-            writer, index=False, sheet_name="Benchmark_Sc2"
-        )
-
-        pd.DataFrame([params_ref]).to_excel(writer, index=False, sheet_name="Params_Reference")
-        pd.DataFrame([params_sc2]).to_excel(writer, index=False, sheet_name="Params_Scenario2")
-
-    out.seek(0)
-    return out.read()
-
-
-# ============================================================
-# SESSION STATE INIT
-# ============================================================
-if "has_results" not in st.session_state:
-    st.session_state["has_results"] = False
-if "df_all_cached" not in st.session_state:
-    st.session_state["df_all_cached"] = None
-
-
-# ============================================================
-# BENCHMARK METHOD (COMMON)
-# ============================================================
-
-st.sidebar.header("Global Settings (apply to both scenarios)")
-
-benchmark_method_ui = st.sidebar.selectbox(
-    "Benchmark belirleme yöntemi (common)",
-    [
-        "Üretim ağırlıklı benchmark",
-        "Kurulu güç ağırlıklı benchmark",
-        "En iyi tesis dilimi (üretim payı)",
-    ],
-    index=0,
-    key="benchmark_method_common",
-)
-
-st.sidebar.caption("Not: Kurulu güç ağırlıklı yöntemde Excel'de InstalledCapacity_MW kolonu gerekir.")
-
-BENCHMARK_METHOD_MAP = {
-    "Üretim ağırlıklı benchmark": "generation_weighted",
-    "Kurulu güç ağırlıklı benchmark": "capacity_weighted",
-    "En iyi tesis dilimi (üretim payı)": "best_plants",
-}
-benchmark_method_code = BENCHMARK_METHOD_MAP.get(benchmark_method_ui, "best_plants")
-
-benchmark_top_pct = 100
-if benchmark_method_ui == "En iyi tesis dilimi (üretim payı)":
-    benchmark_top_pct = st.sidebar.select_slider(
-        "En iyi tesis dilimi (%) (common)",
-        options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-        value=int(st.session_state.get("benchmark_top_pct_common", DEFAULTS["benchmark_top_pct"])),
-        key="benchmark_top_pct_common",
-    )
-else:
-    st.session_state["benchmark_top_pct_common"] = 100
-    benchmark_top_pct = 100
-
-
-# ============================================================
-# SIDEBAR – SCENARIO PARAMETERS (TOP)
-# ============================================================
-
-st.sidebar.header("Scenario Parameters")
-tabs = st.sidebar.tabs(["Reference", "Scenario 2"])
-
-
-def scenario_controls(prefix: str):
-    d = DEFAULTS.copy()
-
-    price_min, price_max = st.slider(
-        f"Karbon Fiyat Aralığı (€/tCO₂) [{prefix}]",
-        0,
-        200,
-        st.session_state.get(f"{prefix}_price_range", d["price_range"]),
-        step=1,
-        key=f"{prefix}_price_range",
-    )
-
-    agk = st.slider(
-        f"Adil Geçiş Katsayısı (AGK) [{prefix}]",
-        0.0,
-        1.0,
-        float(st.session_state.get(f"{prefix}_agk", d["agk"])),
-        step=0.05,
-        key=f"{prefix}_agk",
-    )
-
-    price_method = st.selectbox(
-        f"Fiyat Hesaplama Yöntemi [{prefix}]",
-        ["Market Clearing", "Average Compliance Cost", "Auction Clearing"],
-        index=0,
-        key=f"{prefix}_price_method",
-    )
-
-    auction_supply_share = 1.0
-    if price_method == "Auction Clearing":
-        auction_supply_share = st.slider(
-            f"Auction supply (% of total demand) [{prefix}]",
-            min_value=10,
-            max_value=200,
-            value=int(st.session_state.get(f"{prefix}_auction_supply_pct", 100)),
-            step=10,
-            key=f"{prefix}_auction_supply_pct",
-        ) / 100.0
-
-    slope_bid = st.slider(
-        f"Talep Eğimi (β_bid) [{prefix}]",
-        10,
-        500,
-        int(st.session_state.get(f"{prefix}_slope_bid", d["slope_bid"])),
-        step=10,
-        key=f"{prefix}_slope_bid",
-    )
-    slope_ask = st.slider(
-        f"Arz Eğimi (β_ask) [{prefix}]",
-        10,
-        500,
-        int(st.session_state.get(f"{prefix}_slope_ask", d["slope_ask"])),
-        step=10,
-        key=f"{prefix}_slope_ask",
-    )
-    spread = st.slider(
-        f"Bid/Ask Spread [{prefix}]",
-        0.0,
-        10.0,
-        float(st.session_state.get(f"{prefix}_spread", d["spread"])),
-        step=0.5,
-        key=f"{prefix}_spread",
-    )
-
-    fx_rate = st.number_input(
-        f"Euro Kuru (TL/€) [{prefix}]",
-        min_value=0.0,
-        value=float(st.session_state.get(f"{prefix}_fx_rate", d["fx_rate"])),
-        step=1.0,
-        key=f"{prefix}_fx_rate",
-    )
-
-    trf = st.slider(
-        f"Geçiş Dönemi Telafi Katsayısı (TRF) [{prefix}]",
-        min_value=0.0,
-        max_value=1.0,
-        value=float(st.session_state.get(f"{prefix}_trf", d["trf"])),
-        step=0.05,
-        key=f"{prefix}_trf",
-    )
-
-    return {
-        "price_min": price_min,
-        "price_max": price_max,
-        "agk": agk,
-        "price_method": price_method,
-        "auction_supply_share": float(auction_supply_share),
-        "slope_bid": slope_bid,
-        "slope_ask": slope_ask,
-        "spread": spread,
-        "fx_rate": fx_rate,
-        "trf": trf,
-    }
-
-
-with tabs[0]:
-    ref_params = scenario_controls("REF")
-
-with tabs[1]:
-    sc2_params = scenario_controls("SC2")
-
-
-# ============================================================
-# BENCHMARK SCOPE (OPTIONAL FILTERING BY FUEL GROUP) – COMMON
-# ============================================================
-
-st.sidebar.subheader("Benchmark scope (by fuel) (common)")
-
-SCOPE_OPTIONS = [
-    "Include all plants",
-    "Exclude 5 plants with LOWEST EI",
-    "Exclude 5 plants with HIGHEST EI",
-]
-
-scope_dg = st.sidebar.selectbox("DG Plants", SCOPE_OPTIONS, index=0, key="scope_dg")
-scope_import = st.sidebar.selectbox("Imported Coal Plants", SCOPE_OPTIONS, index=0, key="scope_import")
-scope_lignite = st.sidebar.selectbox("Lignite Plants", SCOPE_OPTIONS, index=0, key="scope_lignite")
 
 
 def _fuel_group_of(ft: str) -> str:
@@ -350,10 +95,20 @@ def _fuel_group_of(ft: str) -> str:
     return "OTHER"
 
 
+def _fuel_label(ft: str, default=None) -> str:
+    g = _fuel_group_of(ft)
+    if g == "DG":
+        return "Natural Gas"
+    if g == "IMPORT_COAL":
+        return "Import Coal"
+    if g == "LIGNITE":
+        return "Lignite"
+    return default if default is not None else str(ft)
+
+
 def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
     if option == "Include all plants":
         return df, []
-
     dfg = df[df["FuelType"].apply(_fuel_group_of) == group_code].copy()
     if dfg.empty:
         return df, []
@@ -372,472 +127,467 @@ def _apply_scope(df: pd.DataFrame, group_code: str, option: str, n: int = 5):
     return df2, picks
 
 
+def _bench_group_map(benchmark_map: dict) -> dict:
+    """Return fuel-group -> list of (label, benchmark). Supports two-tier."""
+    out = {"Natural Gas": [], "Import Coal": [], "Lignite": []}
+    if not benchmark_map:
+        return out
+
+    for k, v in benchmark_map.items():
+        try:
+            b = float(v)
+        except Exception:
+            continue
+        if not np.isfinite(b):
+            continue
+
+        key = str(k)
+        grp = _fuel_label(key, None)
+        if grp not in out:
+            continue
+
+        lbl = "benchmark"
+        if "Best tier" in key:
+            lbl = "Best-tier benchmark"
+        elif "Worst tier" in key:
+            lbl = "Worst-tier benchmark"
+
+        out[grp].append((lbl, b))
+
+    def _order(t):
+        lbl, _ = t
+        if "Best-tier" in lbl:
+            return 0
+        if "Worst-tier" in lbl:
+            return 1
+        return 2
+
+    for g in out:
+        out[g] = sorted(out[g], key=_order)
+    return out
+
+
 # ============================================================
-# FILE UPLOAD  (✅ önemli: uploader boş dönse bile cached sonuçları göstereceğiz)
+# SIDEBAR – COMMON PARAMETERS
 # ============================================================
+st.sidebar.header("Model Parametreleri (Common)")
 
-uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"], key="uploaded_excel")
+price_min, price_max = st.sidebar.slider(
+    "Karbon Fiyat Aralığı (€/tCO₂)",
+    0,
+    200,
+    st.session_state.get("price_range", DEFAULTS["price_range"]),
+    step=1,
+    key="price_range",
+)
 
-if uploaded is not None:
-    df_all_raw = read_all_sheets(uploaded)
-    df_all = clean_ets_input(df_all_raw)
+agk_common = st.sidebar.slider(
+    "Adil Geçiş Katsayısı (AGK) (common)",
+    0.0,
+    1.0,
+    float(st.session_state.get("agk_common", DEFAULTS["agk"])),
+    step=0.05,
+    key="agk_common",
+)
 
-    df_scoped = df_all.copy()
-    df_scoped, _ = _apply_scope(df_scoped, "DG", st.session_state.get("scope_dg", "Include all plants"))
-    df_scoped, _ = _apply_scope(df_scoped, "IMPORT_COAL", st.session_state.get("scope_import", "Include all plants"))
-    df_scoped, _ = _apply_scope(df_scoped, "LIGNITE", st.session_state.get("scope_lignite", "Include all plants"))
-    df_all = df_scoped
+benchmark_method_ui = st.sidebar.selectbox(
+    "Benchmark belirleme yöntemi (common)",
+    [
+        "Üretim ağırlıklı benchmark",
+        "Kurulu güç ağırlıklı benchmark",
+        "En iyi tesis dilimi (üretim payı)",
+        "Two-tier benchmark (Best vs Worst, by plant count)",
+    ],
+    index=0,
+    key="benchmark_method_common",
+)
+st.sidebar.caption("Not: Kurulu güç ağırlıklı yöntemde Excel'de InstalledCapacity_MW kolonu gerekir.")
 
-    # ✅ cache input
-    st.session_state["df_all_cached"] = df_all
-
+benchmark_top_pct_common = int(st.session_state.get("benchmark_top_pct_common", DEFAULTS.get("benchmark_top_pct", 100)))
+if benchmark_method_ui == "En iyi tesis dilimi (üretim payı)":
+    benchmark_top_pct_common = st.sidebar.select_slider(
+        "En iyi tesis dilimi (%) (common)",
+        options=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        value=int(st.session_state.get("benchmark_top_pct_common", DEFAULTS.get("benchmark_top_pct", 100))),
+        key="benchmark_top_pct_common",
+    )
 else:
-    # Eğer daha önce run ile sonuç aldıysak: uploader boş dönse bile devam et
-    if st.session_state.get("has_results", False) and st.session_state.get("df_all_cached") is not None:
-        df_all = st.session_state["df_all_cached"]
-        st.caption("ℹ️ Note: Excel uploader temporarily cleared on rerun; using cached input for display.")
-    else:
-        st.info("Lütfen Excel dosyası yükleyin.")
-        st.stop()
+    st.session_state["benchmark_top_pct_common"] = 100
+    benchmark_top_pct_common = 100
+
+# Two-tier benchmark split (common)
+tier_best_pct_common = 50
+if benchmark_method_ui == "Two-tier benchmark (Best vs Worst, by plant count)":
+    tier_best_pct_common = st.sidebar.select_slider(
+        "Best tier share (% of plants) (common)",
+        options=[10, 20, 30, 40, 50, 60, 70, 80, 90],
+        value=int(st.session_state.get("tier_best_pct_common", 50)),
+        key="tier_best_pct_common",
+        help="Within each fuel group, plants are ranked by EI and split into Best/Worst tiers by plant count. "
+             "Each tier gets its own benchmark (generation-weighted EI).",
+    )
+else:
+    st.session_state["tier_best_pct_common"] = 50
+    tier_best_pct_common = 50
 
 
 # ============================================================
-# RUN BOTH SCENARIOS (✅ sadece butona basınca hesapla)
+# SIDEBAR – SCENARIO PARAMETERS (TOP)
 # ============================================================
+st.sidebar.divider()
+st.sidebar.subheader("Scenario 1 (Reference)")
+agk_ref = st.sidebar.slider("AGK (Ref)", 0.0, 1.0, float(agk_common), 0.05, key="agk_ref")
+price_method_ref = st.sidebar.selectbox(
+    "Fiyat Hesaplama (Ref)",
+    ["Market Clearing", "Average Compliance Cost", "Auction Clearing"],
+    index=0,
+    key="price_method_ref",
+)
+auction_supply_share_ref = 1.0
+if price_method_ref == "Auction Clearing":
+    auction_supply_share_ref = st.sidebar.slider(
+        "Auction supply (% of demand) (Ref)",
+        min_value=10,
+        max_value=200,
+        value=100,
+        step=10,
+        key="auction_supply_ref",
+    ) / 100.0
 
+st.sidebar.subheader("Scenario 2")
+agk_sc2 = st.sidebar.slider("AGK (Sc2)", 0.0, 1.0, float(agk_common), 0.05, key="agk_sc2")
+price_method_sc2 = st.sidebar.selectbox(
+    "Fiyat Hesaplama (Sc2)",
+    ["Market Clearing", "Average Compliance Cost", "Auction Clearing"],
+    index=0,
+    key="price_method_sc2",
+)
+auction_supply_share_sc2 = 1.0
+if price_method_sc2 == "Auction Clearing":
+    auction_supply_share_sc2 = st.sidebar.slider(
+        "Auction supply (% of demand) (Sc2)",
+        min_value=10,
+        max_value=200,
+        value=100,
+        step=10,
+        key="auction_supply_sc2",
+    ) / 100.0
+
+st.sidebar.divider()
+slope_bid = st.sidebar.slider("Talep Eğimi (β_bid)", 10, 500, DEFAULTS["slope_bid"], step=10, key="slope_bid")
+slope_ask = st.sidebar.slider("Arz Eğimi (β_ask)", 10, 500, DEFAULTS["slope_ask"], step=10, key="slope_ask")
+spread = st.sidebar.slider("Bid/Ask Spread", 0.0, 10.0, DEFAULTS["spread"], step=0.5, key="spread")
+
+fx_rate = st.sidebar.number_input(
+    "Euro Kuru (TL/€)",
+    min_value=0.0,
+    value=float(DEFAULTS["fx_rate"]),
+    step=1.0,
+    key="fx_rate",
+)
+
+trf = st.sidebar.slider(
+    "Geçiş Dönemi Telafi Katsayısı (TRF)",
+    min_value=0.0,
+    max_value=1.0,
+    value=float(DEFAULTS.get("trf", 0.0)),
+    step=0.05,
+    key="trf",
+)
+
+BENCHMARK_METHOD_MAP = {
+    "Üretim ağırlıklı benchmark": "generation_weighted",
+    "Kurulu güç ağırlıklı benchmark": "capacity_weighted",
+    "En iyi tesis dilimi (üretim payı)": "best_plants",
+    "Two-tier benchmark (Best vs Worst, by plant count)": "two_tier",
+}
+benchmark_method_code = BENCHMARK_METHOD_MAP.get(benchmark_method_ui, "best_plants")
+
+
+# ============================================================
+# BENCHMARK SCOPE (OPTIONAL FILTERING BY FUEL GROUP)
+# ============================================================
+st.sidebar.subheader("Benchmark scope (by fuel)")
+
+SCOPE_OPTIONS = [
+    "Include all plants",
+    "Exclude 5 plants with LOWEST EI",
+    "Exclude 5 plants with HIGHEST EI",
+]
+scope_dg = st.sidebar.selectbox("DG Plants", SCOPE_OPTIONS, index=0, key="scope_dg")
+scope_import = st.sidebar.selectbox("Imported Coal Plants", SCOPE_OPTIONS, index=0, key="scope_import")
+scope_lignite = st.sidebar.selectbox("Lignite Plants", SCOPE_OPTIONS, index=0, key="scope_lignite")
+
+
+# ============================================================
+# FILE UPLOAD
+# ============================================================
+uploaded = st.file_uploader("Excel veri dosyasını yükleyin (.xlsx)", type=["xlsx"])
+if uploaded is None:
+    st.info("Lütfen Excel dosyası yükleyin.")
+    st.stop()
+
+df_all_raw = read_all_sheets(uploaded)
+df_all = clean_ets_input(df_all_raw)
+
+# Apply scope filters (drops plants from calculation if chosen)
+df_scoped = df_all.copy()
+dropped = {"DG": [], "IMPORT_COAL": [], "LIGNITE": []}
+df_scoped, dropped["DG"] = _apply_scope(df_scoped, "DG", st.session_state.get("scope_dg", "Include all plants"))
+df_scoped, dropped["IMPORT_COAL"] = _apply_scope(df_scoped, "IMPORT_COAL", st.session_state.get("scope_import", "Include all plants"))
+df_scoped, dropped["LIGNITE"] = _apply_scope(df_scoped, "LIGNITE", st.session_state.get("scope_lignite", "Include all plants"))
+df_all = df_scoped
+
+if any(len(v) > 0 for v in dropped.values()):
+    st.sidebar.caption("Dropped plants (by scope):")
+    if dropped["DG"]:
+        st.sidebar.write("DG:", ", ".join(dropped["DG"]))
+    if dropped["IMPORT_COAL"]:
+        st.sidebar.write("Imported coal:", ", ".join(dropped["IMPORT_COAL"]))
+    if dropped["LIGNITE"]:
+        st.sidebar.write("Lignite:", ", ".join(dropped["LIGNITE"]))
+
+
+# ============================================================
+# RUN BOTH SCENARIOS
+# ============================================================
+st.divider()
 run = st.button("Run BOTH Scenarios (Reference + Scenario 2)")
 
 if run:
-    # --- Reference ---
-    ref_out, ref_bm_map, ref_price = ets_hesapla(
+    # Scenario 1
+    sonuc_ref, bench_ref, price_ref = ets_hesapla(
         df_all,
-        ref_params["price_min"],
-        ref_params["price_max"],
-        ref_params["agk"],
-        slope_bid=ref_params["slope_bid"],
-        slope_ask=ref_params["slope_ask"],
-        spread=ref_params["spread"],
+        price_min,
+        price_max,
+        agk_ref,
+        slope_bid=slope_bid,
+        slope_ask=slope_ask,
+        spread=spread,
         benchmark_method=benchmark_method_code,
-        benchmark_top_pct=int(benchmark_top_pct),
+        benchmark_top_pct=int(benchmark_top_pct_common),
+        tier_best_pct=int(tier_best_pct_common),
         cap_col="InstalledCapacity_MW",
-        price_method=ref_params["price_method"],
-        trf=float(ref_params["trf"]),
-        auction_supply_share=float(ref_params["auction_supply_share"]),
+        price_method=price_method_ref,
+        trf=float(trf),
+        auction_supply_share=float(auction_supply_share_ref),
     )
 
-    # --- Scenario 2 ---
-    sc2_out, sc2_bm_map, sc2_price = ets_hesapla(
+    # Scenario 2
+    sonuc_sc2, bench_sc2, price_sc2 = ets_hesapla(
         df_all,
-        sc2_params["price_min"],
-        sc2_params["price_max"],
-        sc2_params["agk"],
-        slope_bid=sc2_params["slope_bid"],
-        slope_ask=sc2_params["slope_ask"],
-        spread=sc2_params["spread"],
+        price_min,
+        price_max,
+        agk_sc2,
+        slope_bid=slope_bid,
+        slope_ask=slope_ask,
+        spread=spread,
         benchmark_method=benchmark_method_code,
-        benchmark_top_pct=int(benchmark_top_pct),
+        benchmark_top_pct=int(benchmark_top_pct_common),
+        tier_best_pct=int(tier_best_pct_common),
         cap_col="InstalledCapacity_MW",
-        price_method=sc2_params["price_method"],
-        trf=float(sc2_params["trf"]),
-        auction_supply_share=float(sc2_params["auction_supply_share"]),
+        price_method=price_method_sc2,
+        trf=float(trf),
+        auction_supply_share=float(auction_supply_share_sc2),
     )
-
-    ref_df = add_cost_columns(ref_out, fx_rate=ref_params["fx_rate"])
-    sc2_df = add_cost_columns(sc2_out, fx_rate=sc2_params["fx_rate"])
-
-    st.session_state["ref_df"] = ref_df
-    st.session_state["sc2_df"] = sc2_df
-    st.session_state["ref_bm_map"] = ref_bm_map or {}
-    st.session_state["sc2_bm_map"] = sc2_bm_map or {}
-    st.session_state["ref_price"] = float(ref_price)
-    st.session_state["sc2_price"] = float(sc2_price)
-
-    st.session_state["params_ref_saved"] = {
-        **ref_params,
-        "benchmark_method": benchmark_method_code,
-        "benchmark_top_pct": int(benchmark_top_pct),
-        "scope_dg": scope_dg,
-        "scope_import": scope_import,
-        "scope_lignite": scope_lignite,
-    }
-    st.session_state["params_sc2_saved"] = {
-        **sc2_params,
-        "benchmark_method": benchmark_method_code,
-        "benchmark_top_pct": int(benchmark_top_pct),
-        "scope_dg": scope_dg,
-        "scope_import": scope_import,
-        "scope_lignite": scope_lignite,
-    }
-
-    st.session_state["has_results"] = True
-
-
-# ============================================================
-# DISPLAY RESULTS (✅ fuel filter sadece filtreler; run gerekmez)
-# ============================================================
-
-if st.session_state.get("has_results", False):
-    ref_df = st.session_state["ref_df"]
-    sc2_df = st.session_state["sc2_df"]
-    ref_bm_map = st.session_state.get("ref_bm_map", {})
-    sc2_bm_map = st.session_state.get("sc2_bm_map", {})
-    ref_price = st.session_state.get("ref_price", np.nan)
-    sc2_price = st.session_state.get("sc2_price", np.nan)
-    params_ref_saved = st.session_state.get("params_ref_saved", {})
-    params_sc2_saved = st.session_state.get("params_sc2_saved", {})
 
     st.subheader("Scenario headline results")
-    h1, h2, h3 = st.columns(3)
-    with h1:
-        kpi_card("Reference carbon price", f"{ref_price:.2f} €/tCO₂", params_ref_saved.get("price_method", ""))
-    with h2:
-        kpi_card("Scenario 2 carbon price", f"{sc2_price:.2f} €/tCO₂", params_sc2_saved.get("price_method", ""))
-    with h3:
-        kpi_card("Δ Price (Sc2 - Ref)", f"{(sc2_price - ref_price):+.2f} €/tCO₂", "difference")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        kpi_card("Reference carbon price", f"{price_ref:,.2f} €/tCO₂", price_method_ref)
+    with c2:
+        kpi_card("Scenario 2 carbon price", f"{price_sc2:,.2f} €/tCO₂", price_method_sc2)
+    with c3:
+        kpi_card("Δ Price (Sc2 - Ref)", f"{(price_sc2-price_ref):,.2f} €/tCO₂", "difference")
 
-    # ============================================================
-    # PLANT-LEVEL COMPARISON (SIDE-BY-SIDE + FUEL FILTER)
-    # ============================================================
+    # ========================================================
+    # COMPARISON CHART (TL/MWh) with fuel filter
+    # ========================================================
     st.subheader("Plant-level comparison (TL/MWh)")
 
-    def _fuel_label(ft: str, plant: str | None = None) -> str:
-        """Robust fuel grouping.
-        Primary signal: FuelType (sheet name).
-        Fallback: Plant name keywords (to catch mis-filed plants).
-        """
-        s = str(ft).strip().lower()
+    fuel_choice = st.selectbox(
+        "Fuel filter",
+        options=["All", "Natural Gas", "Import Coal", "Lignite"],
+        index=0,
+        key="fuel_filter_comp",
+    )
 
-        # --- Plant-name fallback (handles mis-filed plants) ---
-        p = str(plant).strip().lower() if plant is not None else ""
+    def _apply_fuel_filter(df, fuel_label):
+        if fuel_label == "All":
+            return df
+        return df[df["FuelType"].apply(lambda z: _fuel_label(z, "Other")) == fuel_label].copy()
 
-        # Hard overrides (known tricky names)
-        # Ereğli Demir Çelik / ERDEMİR is typically NG/industrial CHP in datasets
-        if ("ereğli" in p and "demir" in p) or ("erdemir" in p):
-            return "Natural Gas"
+    ref = _apply_fuel_filter(sonuc_ref.copy(), fuel_choice)
+    sc2 = _apply_fuel_filter(sonuc_sc2.copy(), fuel_choice)
 
-        # Generic plant-name hints
-        if any(k in p for k in ["doğalgaz", "dogalgaz", "natural gas", "gaz", "ng", "ccgt", "kombine", "combined cycle", "kojenerasyon", "cogeneration", "chp"]):
-            return "Natural Gas"
-        if any(k in p for k in ["ithal", "import"]):
-            return "Imported Coal"
-        if any(k in p for k in ["linyit", "lignite"]):
-            return "Lignite"
+    ref["TL_per_MWh_Ref"] = ref["ets_net_cashflow_€/MWh"] * float(fx_rate)
+    sc2["TL_per_MWh_Sc2"] = sc2["ets_net_cashflow_€/MWh"] * float(fx_rate)
 
-        # --- FuelType (sheet) classification ---
-        if any(k in s for k in ["dg", "doğalgaz", "dogalgaz", "natural gas", "gas", "ng"]):
-            return "Natural Gas"
-        if any(k in s for k in ["ithal", "import", "imported"]):
-            return "Imported Coal"
-        if any(k in s for k in ["linyit", "lignite"]):
-            return "Lignite"
-        return "Other"
-
-    base_cols = ["Plant"]
-    if "FuelType" in ref_df.columns:
-        base_cols.append("FuelType")
-
-    comp = ref_df[base_cols].copy()
-    comp["InstalledCapacity_MW"] = ref_df["InstalledCapacity_MW"] if "InstalledCapacity_MW" in ref_df.columns else np.nan
-    comp["TL_per_MWh_Ref"] = pd.to_numeric(ref_df.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
-
-    sc2_small = sc2_df[["Plant"]].copy()
-    sc2_small["TL_per_MWh_Sc2"] = pd.to_numeric(sc2_df.get("ets_net_cashflow_TL/MWh", np.nan), errors="coerce")
-
-    comp = comp.merge(sc2_small, on="Plant", how="outer")
-
-    if "FuelType" not in comp.columns and "FuelType" in sc2_df.columns:
-        comp = comp.merge(sc2_df[["Plant", "FuelType"]], on="Plant", how="left")
-
-    # ✅ Robust fuel grouping (FuelType + Plant together)
-    comp["FuelGroup"] = comp.apply(lambda r: _fuel_label(r.get("FuelType", ""), r.get("Plant", "")), axis=1) if "FuelType" in comp.columns else "Other"
-
+    comp = ref.merge(sc2[["Plant", "TL_per_MWh_Sc2"]], on="Plant", how="inner")
     comp["Δ_TL_per_MWh"] = comp["TL_per_MWh_Sc2"] - comp["TL_per_MWh_Ref"]
 
-    # ✅ Fuel filter (bu değişince sadece yeniden çizilir; model tekrar çalışmaz)
-    fuel_options = ["All", "Natural Gas", "Imported Coal", "Lignite", "Other"]
-    fuel_choice = st.selectbox("Fuel filter", fuel_options, index=0, key="fuel_filter_choice")
+    comp = comp.sort_values("Δ_TL_per_MWh")
 
-    plot_df = comp.copy()
-    if fuel_choice != "All":
-        plot_df = plot_df[plot_df["FuelGroup"] == fuel_choice].copy()
+    top_n = 30
+    if len(comp) > top_n:
+        comp = comp.reindex(comp["Δ_TL_per_MWh"].abs().sort_values(ascending=False).head(top_n).index)
 
-    plot_df["absΔ"] = plot_df["Δ_TL_per_MWh"].abs()
-    plot_df = plot_df.sort_values("absΔ", ascending=False).head(25)
-
-    long_df = plot_df.melt(
-        id_vars=["Plant", "FuelGroup"],
+    # side-by-side bars
+    comp_melt = comp.melt(
+        id_vars=["Plant"],
         value_vars=["TL_per_MWh_Ref", "TL_per_MWh_Sc2"],
         var_name="Scenario",
         value_name="TL_per_MWh",
     )
-    long_df["Scenario"] = long_df["Scenario"].replace({
-        "TL_per_MWh_Ref": "Reference",
-        "TL_per_MWh_Sc2": "Scenario 2",
-    })
+    comp_melt["Scenario"] = comp_melt["Scenario"].replace(
+        {"TL_per_MWh_Ref": "Reference", "TL_per_MWh_Sc2": "Scenario 2"}
+    )
 
-    plant_order = plot_df.sort_values("Δ_TL_per_MWh")["Plant"].tolist()
-    long_df["Plant"] = pd.Categorical(long_df["Plant"], categories=plant_order, ordered=True)
-
-    fig_grouped = px.bar(
-        long_df,
+    fig_comp = px.bar(
+        comp_melt.sort_values(["Plant", "Scenario"]),
         x="TL_per_MWh",
         y="Plant",
+        orientation="h",
         color="Scenario",
         barmode="group",
-        orientation="h",
+        labels={"TL_per_MWh": "Net ETS impact (TL/MWh)", "Plant": "", "Scenario": ""},
         template="simple_white",
-        labels={"TL_per_MWh": "Net ETS impact (TL/MWh)", "Plant": ""},
-        title="Plant-level ETS impact by scenario (side-by-side)",
-        color_discrete_map={
-            "Reference": "#1f77b4",   # mavi
-            "Scenario 2": "#d62728",  # kırmızı
-        }
     )
+    fig_comp.update_layout(height=750, margin=dict(l=10, r=10, t=40, b=10))
+    fig_comp.update_xaxes(gridcolor="rgba(0,0,0,0.06)")
+    fig_comp.update_yaxes(showgrid=False)
+    st.plotly_chart(fig_comp, use_container_width=True)
 
-    fig_grouped.update_layout(
-        height=780,
-        margin=dict(l=10, r=10, t=60, b=10),
-        legend_orientation="h",
-        legend_y=1.08,
-        legend_x=0.01,
-    )
-    fig_grouped.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=True, zerolinecolor="black")
-    fig_grouped.update_yaxes(showgrid=False)
+    # ========================================================
+    # Effective EI ranked chart (AGK included) + scenario toggles
+    # ========================================================
+    st.subheader("Effective emission intensity (EI_eff) ranked (AGK included)")
 
-    st.plotly_chart(fig_grouped, use_container_width=True)
+    show_ref = st.checkbox("Show Reference", value=True)
+    show_sc2 = st.checkbox("Show Scenario 2", value=True)
 
-    # ============================================================
-    # AGK-ADJUSTED EMISSION INTENSITY CURVE (sorted low -> high)
-    #   - Blue: Reference, Red: Scenario 2
-    #   - Uses effective intensity: EI_eff = B + (EI - B) * (1 - AGK)
-    # ============================================================
-    st.subheader("Emission intensity ranking (AGK-adjusted) – Reference vs Scenario 2")
-
-    csel1, csel2, csel3 = st.columns([2, 1, 1])
-    with csel1:
-        st.caption("Fuel filter is shared with the comparison chart above.")
-    with csel2:
-        show_ref = st.checkbox("Show Reference", value=True, key="ei_show_ref")
-    with csel3:
-        show_sc2 = st.checkbox("Show Scenario 2", value=True, key="ei_show_sc2")
-
-    def _plant_level_intensity(df: pd.DataFrame) -> pd.DataFrame:
-        """Return plant-level EI (tCO₂/MWh) and generation weights if available."""
-        d = df.copy()
-        # prefer existing intensity
-        if "intensity" in d.columns:
-            d["_EI"] = pd.to_numeric(d["intensity"], errors="coerce")
-        elif ("Emissions_tCO2" in d.columns) and ("Generation_MWh" in d.columns):
-            e = pd.to_numeric(d["Emissions_tCO2"], errors="coerce")
-            g = pd.to_numeric(d["Generation_MWh"], errors="coerce").replace(0, np.nan)
-            d["_EI"] = e / g
-        else:
-            d["_EI"] = np.nan
-
-        if "Generation_MWh" in d.columns:
-            d["_W"] = pd.to_numeric(d["Generation_MWh"], errors="coerce")
-        else:
-            d["_W"] = 1.0
-
-        cols = ["Plant", "FuelType", "_EI", "_W"]
-        for c in cols:
-            if c not in d.columns:
-                d[c] = np.nan
-
-        # generation-weighted EI per plant if possible
-        def _wavg(x):
-            w = x["_W"].replace(0, np.nan)
-            if w.notna().sum() == 0:
-                return np.nan
-            return np.nansum(x["_EI"] * w) / np.nansum(w)
-
-        ei = (
-            d.groupby(["Plant", "FuelType"], as_index=False)
-             .apply(lambda x: pd.Series({"EI": _wavg(x), "W": np.nansum(x["_W"])}))
-        ).reset_index(drop=True)
-
-        # ✅ robust grouping: use FuelType + Plant together
-        ei["FuelGroup"] = ei.apply(lambda r: _fuel_label(r.get("FuelType", ""), r.get("Plant", "")), axis=1)
-        return ei
-
-    def _bench_group_map(bm_map: dict) -> dict:
-        """Map any benchmark_map keys into FuelGroup -> benchmark."""
-        out = {}
-        if not isinstance(bm_map, dict):
-            return out
-        for k, v in bm_map.items():
-            try:
-                b = float(v)
-            except Exception:
-                continue
-            if not np.isfinite(b):
-                continue
-            grp = _fuel_label(k, None)
-            # keep first seen
-            if grp not in out:
-                out[grp] = b
-        return out
-
-    def _apply_agk_effective(ei_df: pd.DataFrame, bm_group: dict, agk_val: float) -> pd.DataFrame:
-        df = ei_df.copy()
-        df["B_fuel"] = df["FuelGroup"].map(bm_group)
-        df["EI_eff"] = df["B_fuel"] + (df["EI"] - df["B_fuel"]) * (1 - float(agk_val))
-        # fallback if benchmark missing
-        df.loc[df["B_fuel"].isna(), "EI_eff"] = df.loc[df["B_fuel"].isna(), "EI"]
-        return df
-
-    # Build scenario-specific plant EI (and apply same fuel filter as above)
-    frames = []
-    if show_ref:
-        ref_ei = _plant_level_intensity(ref_df)
-        bm_ref = _bench_group_map(ref_bm_map)
-        agk_ref = float(params_ref_saved.get("agk", 0.0))
-        ref_ei = _apply_agk_effective(ref_ei, bm_ref, agk_ref)
-        ref_ei["Scenario"] = "Reference"
-        frames.append(ref_ei)
-
-    if show_sc2:
-        sc2_ei = _plant_level_intensity(sc2_df)
-        bm_sc2 = _bench_group_map(sc2_bm_map)
-        agk_sc2 = float(params_sc2_saved.get("agk", 0.0))
-        sc2_ei = _apply_agk_effective(sc2_ei, bm_sc2, agk_sc2)
-        sc2_ei["Scenario"] = "Scenario 2"
-        frames.append(sc2_ei)
-
-    if len(frames) == 0:
-        st.info("Select at least one scenario to display.")
-    else:
-        ei_all = pd.concat(frames, ignore_index=True)
-
-        # Apply same fuel filter used above (fuel_choice)
+    # build ranked series by plant, using EI_eff mean (already includes AGK + benchmark)
+    def _rank_df(df_out: pd.DataFrame, label: str):
+        d = df_out.copy()
+        d["FuelGroup"] = d["FuelType"].apply(lambda z: _fuel_label(z, "Other"))
         if fuel_choice != "All":
-            ei_all = ei_all[ei_all["FuelGroup"] == fuel_choice].copy()
+            d = d[d["FuelGroup"] == fuel_choice].copy()
 
-        # === Determine ordering dynamically ===
-        if show_ref:
-            # Reference açıkken: Reference EI_eff sırası baz alınır
-            order_series = (
-                ei_all[ei_all["Scenario"] == "Reference"]
-                .groupby("Plant")["EI_eff"]
-                .mean()
-                .sort_values()
-            )
-        else:
-            # Sadece Scenario 2 açıkken: onun sırası baz alınır
-            order_series = (
-                ei_all[ei_all["Scenario"] == "Scenario 2"]
-                .groupby("Plant")["EI_eff"]
-                .mean()
-                .sort_values()
-            )
+        # sort by EI_eff
+        d = d.sort_values("EI_eff", ascending=True).reset_index(drop=True)
+        d["Rank"] = np.arange(1, len(d) + 1)
+        d["Scenario"] = label
+        return d
 
-        # Fallback (çok nadir): hangi senaryo seçildiyse boşsa, genel ortalama ile sırala
-        if order_series.empty:
-            order_series = ei_all.groupby("Plant")["EI_eff"].mean().sort_values()
+    lines = []
+    if show_ref:
+        lines.append(_rank_df(sonuc_ref, "Reference"))
+    if show_sc2:
+        lines.append(_rank_df(sonuc_sc2, "Scenario 2"))
 
-        order_plants = order_series.index.tolist()
-        ei_all = ei_all[ei_all["Plant"].isin(order_plants)].copy()
+    if lines:
+        plot_df = pd.concat(lines, ignore_index=True)
 
-        # Rank axis (1..N)
-        rank_map = {p: i + 1 for i, p in enumerate(order_plants)}
-        ei_all["Rank"] = ei_all["Plant"].map(rank_map)
+        fig_ei = px.line(
+            plot_df,
+            x="Rank",
+            y="EI_eff",
+            color="Scenario",
+            markers=True,
+            template="simple_white",
+            labels={"Rank": "Plants ranked by effective intensity (low → high)", "EI_eff": "Effective emission intensity (tCO₂/MWh)"},
+        )
+        fig_ei.update_layout(height=520, margin=dict(l=10, r=10, t=40, b=10))
+        fig_ei.update_xaxes(showgrid=False)
+        fig_ei.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
 
-        # Plot (rank on x, EI_eff on y)
-        fig_ei = go.Figure()
+        # benchmark lines (fuel-specific). Use reference benchmark map for guidance.
+        bm_draw = _bench_group_map(bench_ref)
 
-        if show_ref:
-            dref = ei_all[ei_all["Scenario"] == "Reference"].sort_values("Rank")
-            fig_ei.add_trace(go.Scatter(
-                x=dref["Rank"],
-                y=dref["EI_eff"],
-                mode="lines+markers",
-                name="Reference",
-                line=dict(color="#1f77b4"),
-                marker=dict(size=6),
-                customdata=dref[["Plant", "FuelGroup"]].to_numpy(),
-                hovertemplate="Rank: %{x}<br>EI_eff: %{y:.3f} tCO₂/MWh<br>Plant: %{customdata[0]}<br>Fuel: %{customdata[1]}<extra></extra>",
-            ))
-
-        if show_sc2:
-            dsc2 = ei_all[ei_all["Scenario"] == "Scenario 2"].sort_values("Rank")
-            fig_ei.add_trace(go.Scatter(
-                x=dsc2["Rank"],
-                y=dsc2["EI_eff"],
-                mode="lines+markers",
-                name="Scenario 2",
-                line=dict(color="#d62728"),
-                marker=dict(size=6),
-                customdata=dsc2[["Plant", "FuelGroup"]].to_numpy(),
-                hovertemplate="Rank: %{x}<br>EI_eff: %{y:.3f} tCO₂/MWh<br>Plant: %{customdata[0]}<br>Fuel: %{customdata[1]}<extra></extra>",
-            ))
-
-        # Benchmark lines (draw by selected fuel or all)
-        bm_draw = _bench_group_map(ref_bm_map)  # keep consistent for display
         BM_COLOR = {
-            "Lignite": "green",
             "Natural Gas": "blue",
+            "Import Coal": "gold",
             "Imported Coal": "gold",
+            "Lignite": "green",
         }
-        groups_to_draw = ["Natural Gas", "Imported Coal", "Lignite"] if fuel_choice == "All" else [fuel_choice]
+
+        groups_to_draw = ["Natural Gas", "Import Coal", "Lignite"] if fuel_choice == "All" else [fuel_choice]
         for grp in groups_to_draw:
-            if grp in bm_draw and np.isfinite(bm_draw[grp]):
+            items = bm_draw.get(grp, [])
+            if not items:
+                continue
+            for idx, (lbl, bval) in enumerate(items):
+                if not np.isfinite(bval):
+                    continue
+                dash = "dash" if "Best-tier" in lbl else ("dot" if "Worst-tier" in lbl else "dash")
                 fig_ei.add_hline(
-                    y=float(bm_draw[grp]),
-                    line_dash="dash",
+                    y=float(bval),
+                    line_dash=dash,
                     line_width=2,
                     line_color=BM_COLOR.get(grp, "gray"),
-                    opacity=0.75,
-                    annotation_text=f"{grp} benchmark",
+                    opacity=0.55,
+                    annotation_text=f"{grp} {lbl}",
                     annotation_position="top left",
                 )
-
-        fig_ei.update_layout(
-            template="simple_white",
-            height=520,
-            margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title="Plants ranked by effective intensity (low → high)",
-            yaxis_title="Effective emission intensity (tCO₂/MWh)",
-            legend_orientation="h",
-            legend_y=1.10,
-            legend_x=0.01,
-        )
-        fig_ei.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
-        fig_ei.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.06)")
 
         st.plotly_chart(fig_ei, use_container_width=True)
 
         st.caption(
             "EI_eff = B_fuel + (EI − B_fuel) × (1 − AGK). "
-            "AGK increases reduce the dispersion across plants around the benchmark, reflecting the fairness/transition mechanism."
+            "AGK increases reduce dispersion across plants around the benchmark, reflecting the fairness/transition mechanism."
         )
+    else:
+        st.info("Select at least one scenario to display (Reference and/or Scenario 2).")
 
     st.divider()
 
-    with st.expander("Reference results (raw table)", expanded=False):
-        st.dataframe(ref_df, use_container_width=True)
+    # ========================================================
+    # RAW TABLES + EXCEL DOWNLOAD (same columns as shown)
+    # ========================================================
+    st.subheader("Tüm Sonuçlar (Ham Tablo)")
 
-    with st.expander("Scenario 2 results (raw table)", expanded=False):
-        st.dataframe(sc2_df, use_container_width=True)
+    # add TL columns + keep capacity next to plant if exists
+    def _enrich(df_out: pd.DataFrame, scenario_name: str) -> pd.DataFrame:
+        d = df_out.copy()
+        d["Scenario"] = scenario_name
+        d["ETS_TL_total"] = d["ets_net_cashflow_€"] * float(fx_rate)
+        d["ETS_TL_per_MWh"] = d["ets_net_cashflow_€/MWh"] * float(fx_rate)
+        return d
 
-    with st.expander("Comparison table (TL/MWh)", expanded=False):
-        st.dataframe(comp.drop(columns=["absΔ"], errors="ignore"), use_container_width=True)
+    ref_x = _enrich(sonuc_ref, "Reference")
+    sc2_x = _enrich(sonuc_sc2, "Scenario 2")
 
-    excel_bytes = to_excel_bytes(
-        ref_df=ref_df,
-        sc2_df=sc2_df,
-        comp_df=comp.drop(columns=["absΔ"], errors="ignore"),
-        bm_map_ref=ref_bm_map or {},
-        bm_map_sc2=sc2_bm_map or {},
-        params_ref=params_ref_saved,
-        params_sc2=params_sc2_saved,
-    )
+    out_all = pd.concat([ref_x, sc2_x], ignore_index=True)
+
+    # reorder columns: Plant, InstalledCapacity_MW then rest
+    front = ["Plant"]
+    if "InstalledCapacity_MW" in out_all.columns:
+        front += ["InstalledCapacity_MW"]
+    front += ["Scenario"]
+    rest = [c for c in out_all.columns if c not in front]
+    out_all = out_all[front + rest]
+
+    st.dataframe(out_all, use_container_width=True)
+
+    # Excel download (same columns as above)
+    def _to_excel_bytes(df_res: pd.DataFrame, bm_ref: dict, bm_sc2: dict):
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df_res.to_excel(writer, index=False, sheet_name="Results_All")
+            pd.DataFrame({"BenchmarkKey": list(bm_ref.keys()), "Value": list(bm_ref.values())}).to_excel(
+                writer, index=False, sheet_name="Benchmark_Ref"
+            )
+            pd.DataFrame({"BenchmarkKey": list(bm_sc2.keys()), "Value": list(bm_sc2.values())}).to_excel(
+                writer, index=False, sheet_name="Benchmark_Sc2"
+            )
+        buf.seek(0)
+        return buf.getvalue()
+
+    excel_bytes = _to_excel_bytes(out_all, bench_ref, bench_sc2)
 
     st.download_button(
-        "Download ALL results as Excel (.xlsx)",
+        "Download results as Excel (.xlsx)",
         data=excel_bytes,
-        file_name="ets_scenario_comparison.xlsx",
+        file_name="ets_results_scenarios.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
-else:
-    st.info("Dosyayı yükleyin ve 'Run BOTH Scenarios' butonuna basın.")
